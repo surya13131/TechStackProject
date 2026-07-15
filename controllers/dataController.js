@@ -6,13 +6,13 @@ import Record from "../models/Record.js";
 // ==========================================
 export const getRecords = async (req, res) => {
   try {
-    // PERFORMANCE UPGRADE: Added .lean() 
-    // This returns plain JSON instead of heavy Mongoose documents, massively speeding up the API response.
+    // PERFORMANCE UPGRADE: .lean() returns plain JSON instead of heavy Mongoose documents, 
+    // massively speeding up the API response.
     const records = await Record.find().sort({ createdAt: -1 }).lean();
     
     res.status(200).json(records);
   } catch (err) {
-    console.error("Error fetching records:", err);
+    console.error("❌ Error fetching records:", err);
     res.status(500).json({ error: "Server error while fetching records." });
   }
 };
@@ -24,13 +24,13 @@ export const updateRecord = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Validate the MongoDB ID format to prevent CastErrors
+    // 1. Validate the MongoDB ID format to prevent CastErrors crashing the server
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid record ID format." });
     }
 
     // 2. Destructure ONLY the fields we want to allow updates for.
-    // This strictly prevents overriding the imageHash, _id, or loadingTime.
+    // This strictly prevents overriding the imageHash, _id, loadingTime, or timestamps.
     const { 
       name, 
       email, 
@@ -56,8 +56,8 @@ export const updateRecord = async (req, res) => {
     const updated = await Record.findByIdAndUpdate(
       id,
       { $set: secureUpdate },
-      { new: true, runValidators: true } 
-    ).lean(); // .lean() added here for a slightly faster return
+      { new: true, runValidators: true } // runValidators ensures Mongoose schema rules are respected
+    ).lean(); 
     
     if (!updated) {
       return res.status(404).json({ error: "Record not found." });
@@ -65,7 +65,7 @@ export const updateRecord = async (req, res) => {
 
     res.status(200).json(updated);
   } catch (err) {
-    console.error("Error updating record:", err);
+    console.error(`❌ Error updating record ${req.params.id}:`, err);
     res.status(500).json({ error: "Server error while updating the record." });
   }
 };
@@ -89,9 +89,13 @@ export const deleteRecord = async (req, res) => {
       return res.status(404).json({ error: "Record not found or already deleted." });
     }
 
-    res.status(200).json({ message: "Record deleted successfully." });
+    // Returning the deletedId helps the React frontend filter it out of the UI instantly
+    res.status(200).json({ 
+      message: "Record deleted successfully.",
+      deletedId: id 
+    });
   } catch (err) {
-    console.error("Error deleting record:", err);
+    console.error(`❌ Error deleting record ${req.params.id}:`, err);
     res.status(500).json({ error: "Server error while deleting the record." });
   }
 };
