@@ -7,7 +7,7 @@ import Record from "../models/Record.js";
 const fsPromises = fs.promises;
 
 // ==========================================
-// 🧠 DATA EXTRACTION ENGINE
+// 🧠 MAX-ACCURACY DATA EXTRACTION ENGINE
 // ==========================================
 const extractDataFromText = (text) => {
   let name = "Nil";
@@ -18,80 +18,126 @@ const extractDataFromText = (text) => {
   let department = "Nil";
   let platform = "Nil";
 
-  const lowerText = text.toLowerCase();
+  // 1. Aggressive Text Cleaning (Fixes Tesseract's visual noise)
+  const cleanedText = text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width spaces
+    .replace(/[|~*^_{}[\]\\]/g, ' ')       // Strip common OCR artifact characters
+    .replace(/\s+/g, ' ')                  // Normalize spacing
+    .trim();
+    
+  const lowerText = cleanedText.toLowerCase();
+  
+  // Split into clean, non-empty lines
+  const lines = text.split("\n").map(line => line.replace(/[|~*^]/g, '').trim()).filter(line => line.length > 2);
 
-  // 1. Extract Phone Number (Indian format)
-  const phoneRegex = /(?:(?:\+|0{0,2})91[\s-]?)?([6-9]\d{9})/;
-  const phoneMatch = text.match(phoneRegex);
-  if (phoneMatch) phone = phoneMatch[1];
+  // ---------------------------------------------------------
+  // 1. EXACT PATTERN MATCHING
+  // ---------------------------------------------------------
+  
+  // Phone: Indian format (catches +91, 0, or just 10 digits starting with 6-9)
+  const phoneRegex = /(?:(?:\+|0{0,2})91[\s-]?)?([6-9]\d{2}[\s-]?\d{3}[\s-]?\d{4})/;
+  const phoneMatch = cleanedText.match(phoneRegex);
+  if (phoneMatch) phone = phoneMatch[1].replace(/[\s-]/g, ''); // Strip spaces/dashes from output
 
-  // 2. Extract Email Address
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}/;
-  const emailMatch = text.match(emailRegex);
+  // Email: Stricter regex to avoid picking up file extensions (like image.png)
+  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}\b/;
+  const emailMatch = cleanedText.match(emailRegex);
   if (emailMatch) email = emailMatch[0].toLowerCase();
 
-  // 3. Detect Platform
-  if (lowerText.includes("naukri")) platform = "Naukri";
-  else if (lowerText.includes("shine")) platform = "Shine";
-  else if (lowerText.includes("linkedin")) platform = "LinkedIn";
-  else if (lowerText.includes("foundit") || lowerText.includes("monster")) platform = "Foundit";
-  else if (lowerText.includes("indeed")) platform = "Indeed";
+  // Platform: Word boundaries prevent partial matches
+  if (/\bnaukri\b/.test(lowerText)) platform = "Naukri";
+  else if (/\bshine\b/.test(lowerText)) platform = "Shine";
+  else if (/\blinkedin\b/.test(lowerText)) platform = "LinkedIn";
+  else if (/\bfoundit\b|\bmonster\b/.test(lowerText)) platform = "Foundit";
+  else if (/\bindeed\b/.test(lowerText)) platform = "Indeed";
 
-  // 4. Detect Location (Expanded Indian Tech Hubs)
+  // ---------------------------------------------------------
+  // 2. DICTIONARY MATCHING (Location & Dept)
+  // ---------------------------------------------------------
+  
   const techHubs = [
-    "chennai", "bangalore", "bengaluru", "hyderabad", "pune", 
-    "mumbai", "delhi", "noida", "gurugram", "gurgaon", "coimbatore",
-    "kochi", "trivandrum", "kolkata", "ahmedabad"
+    "chennai", "omr", "sholinganallur", "perungudi", "tidel park", 
+    "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", 
+    "delhi", "noida", "gurugram", "gurgaon", "coimbatore", "kochi"
   ];
   for (const city of techHubs) {
-    if (lowerText.includes(city)) {
-      location = city.charAt(0).toUpperCase() + city.slice(1);
+    if (new RegExp(`\\b${city}\\b`).test(lowerText)) {
+      // Format nicely (e.g., "Omr" -> "OMR", "Chennai" -> "Chennai")
+      location = city.length <= 3 ? city.toUpperCase() : city.charAt(0).toUpperCase() + city.slice(1);
       break;
     }
   }
 
-  // 5. Line-by-Line Label Search
-  const lines = text.split("\n").map(line => line.trim()).filter(line => line.length > 0);
+  const deptKeywords = [
+    "computer science", "information technology", "electronics", "electrical",
+    "mechanical", "civil", "data science", "artificial intelligence",
+    "b.tech in it", "b.tech in cse", "cse", "ece", "eee", "mech"
+  ];
+  const foundDept = deptKeywords.find(kw => new RegExp(`\\b${kw.replace(/\./g, '\\.')}\\b`).test(lowerText));
+  if (foundDept) {
+    department = foundDept.toUpperCase() === foundDept 
+      ? foundDept.toUpperCase() 
+      : foundDept.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  }
+
+  // ---------------------------------------------------------
+  // 3. HEURISTIC LINE SCANNING
+  // ---------------------------------------------------------
   
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const lowerLine = line.toLowerCase();
-    
-    if (/(name|candidate):/i.test(lowerLine)) {
-      name = line.replace(/(name|candidate):/i, "").trim();
-    } else if (/(college|institute|university):/i.test(lowerLine)) {
-      college = line.replace(/(college|institute|university):/i, "").trim();
-    } else if (/(department|degree|course):/i.test(lowerLine)) {
-      department = line.replace(/(department|degree|course):/i, "").trim();
+
+    // A. Explicit Label Checks
+    if (name === "Nil" && lowerLine.match(/^(name|candidate name)[\s:-]+/)) {
+      name = line.replace(/^(name|candidate name)[\s:-]+/i, "").trim();
+    }
+    if (college === "Nil" && lowerLine.match(/^(college|institute|university)[\s:-]+/)) {
+      college = line.replace(/^(college|institute|university)[\s:-]+/i, "").trim();
+    }
+    if (department === "Nil" && lowerLine.match(/^(department|branch|course|stream|specialization)[\s:-]+/)) {
+      department = line.replace(/^(department|branch|course|stream|specialization)[\s:-]+/i, "").trim();
     }
   }
 
-  // 6. Smarter Name Fallback (Ignores garbage words)
-  if (name === "Nil" && lines.length > 0) {
-    const invalidNameWords = ["resume", "cv", "curriculum", "profile", "page", "contact", "email", "phone", "details"];
+  // B. Fallback: Name Detection (Top-down scan excluding common resume keywords)
+  if (name === "Nil") {
+    const invalidNameWords = [
+      "resume", "cv", "curriculum", "profile", "page", "contact", 
+      "email", "phone", "mobile", "dob", "date", "gender", "status",
+      "nationality", "summary", "objective", "skills", "education"
+    ];
     
-    const possibleName = lines.slice(0, 5).find(line => { // Search top 5 lines
-      const l = line.toLowerCase();
-      return (
-        !l.includes("@") &&
-        !/\d/.test(l) && // No numbers
-        l.length > 2 && 
-        l.length < 25 &&
-        !invalidNameWords.some(word => l.includes(word)) // Must not contain garbage words
-      );
-    });
-    if (possibleName) name = possibleName;
+    // Check only the first 5 lines
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      const l = lines[i];
+      const lowerL = l.toLowerCase();
+      
+      // Look for a line with 1-3 words, only letters/dots, no numbers, not in the blocklist
+      if (/^[A-Za-z\s\.]{3,35}$/.test(l) && !invalidNameWords.some(word => lowerL.includes(word))) {
+        name = l;
+        break;
+      }
+    }
   }
 
-  // 7. Clean up College String
-  if (college !== "Nil") {
-    college = college
-      .replace(/Highest\s*Degree/gi, "")
-      .replace(/Education/gi, "")
-      .replace(/B\.?Tech|B\.?E|BCA|MCA|MBA|B\.?Sc|M\.?Sc/gi, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!college) college = "Nil";
+  // C. Fallback: College/Education Detection
+  if (college === "Nil") {
+    const eduKeywords = ["university", "institute of", "college of", "polytechnic", "academy"];
+    const eduLine = lines.find(line => eduKeywords.some(kw => line.toLowerCase().includes(kw)));
+    
+    if (eduLine) {
+      college = eduLine.replace(/highest degree|education|passed out|graduated/gi, "").trim();
+    }
   }
+
+  // ---------------------------------------------------------
+  // 4. FINAL CLEANUP
+  // ---------------------------------------------------------
+  
+  if (!name || name.trim() === "") name = "Nil";
+  if (!college || college.trim() === "") college = "Nil";
+  if (!department || department.trim() === "") department = "Nil";
 
   return { name, email, phone, location, college, department, platform };
 };
@@ -110,7 +156,6 @@ export const processImages = async (req, res) => {
     const results = [];
     const duplicates = [];
 
-    // 🔥 PERFORMANCE UPGRADE: Initialize the OCR Worker ONCE for the whole batch
     console.log("⚙️ Booting up Tesseract OCR Engine...");
     const worker = await createWorker('eng');
 
@@ -123,7 +168,7 @@ export const processImages = async (req, res) => {
           const fileBuffer = await fsPromises.readFile(originalPath);
           const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
-          // 1. Duplicate Check
+          // Duplicate Check
           const existingRecord = await Record.findOne({ imageHash: hash }).lean();
           if (existingRecord) {
             console.log(`⏭️ Skipping duplicate: ${file.originalname}`);
@@ -132,21 +177,21 @@ export const processImages = async (req, res) => {
             continue; 
           }
 
-          // 2. Run OCR
+          // Run OCR
           console.log(`📄 Reading ${file.originalname}...`);
           const { data: { text } } = await worker.recognize(originalPath);
           
-          // 3. Extract Structured Data
+          // Extract Structured Data
           let extractedData = extractDataFromText(text);
           
-          // Safety fallback: ensure name is never entirely empty
-          if (extractedData.name === "Nil" || !extractedData.name) {
+          // Absolute Safety Fallback: Use filename if name logic fails completely
+          if (extractedData.name === "Nil") {
               extractedData.name = file.originalname.split('.')[0]; 
           }
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
 
-          // 4. Save to Database
+          // Save to Database
           const newRecord = await Record.create({
             imageHash: hash,
             ...extractedData,
@@ -159,12 +204,10 @@ export const processImages = async (req, res) => {
         } catch (fileError) {
           console.error(`❌ Error processing file ${file.originalname}:`, fileError);
         } finally {
-          // 5. Guaranteed cleanup of temp file on disk
           await fsPromises.unlink(originalPath).catch(() => {});
         }
       }
     } finally {
-      // 🔥 Always terminate the worker after the loop, even if an error occurs
       console.log("🛑 Shutting down Tesseract OCR Engine...");
       await worker.terminate();
     }
