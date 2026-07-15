@@ -7,8 +7,7 @@ import Record from "../models/Record.js";
 const fsPromises = fs.promises;
 
 // ==========================================
-// TEXT PARSING ENGINE
-// Hunts for specific patterns in the raw OCR dump
+// 🧠 DATA EXTRACTION ENGINE
 // ==========================================
 const extractDataFromText = (text) => {
   let name = "Nil";
@@ -21,7 +20,7 @@ const extractDataFromText = (text) => {
 
   const lowerText = text.toLowerCase();
 
-  // 1. Extract Phone Number (Indian format: 10 digits starting with 6-9)
+  // 1. Extract Phone Number (Indian format)
   const phoneRegex = /(?:(?:\+|0{0,2})91[\s-]?)?([6-9]\d{9})/;
   const phoneMatch = text.match(phoneRegex);
   if (phoneMatch) phone = phoneMatch[1];
@@ -31,23 +30,27 @@ const extractDataFromText = (text) => {
   const emailMatch = text.match(emailRegex);
   if (emailMatch) email = emailMatch[0].toLowerCase();
 
-  // 3. Detect Platform from URL or UI text
+  // 3. Detect Platform
   if (lowerText.includes("naukri")) platform = "Naukri";
   else if (lowerText.includes("shine")) platform = "Shine";
   else if (lowerText.includes("linkedin")) platform = "LinkedIn";
   else if (lowerText.includes("foundit") || lowerText.includes("monster")) platform = "Foundit";
   else if (lowerText.includes("indeed")) platform = "Indeed";
 
-  // 4. Detect Location (Basic Indian Tech Hubs Dictionary)
-  const commonCities = ["chennai", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", "delhi", "noida", "gurugram", "gurgaon", "coimbatore"];
-  for (const city of commonCities) {
+  // 4. Detect Location (Expanded Indian Tech Hubs)
+  const techHubs = [
+    "chennai", "bangalore", "bengaluru", "hyderabad", "pune", 
+    "mumbai", "delhi", "noida", "gurugram", "gurgaon", "coimbatore",
+    "kochi", "trivandrum", "kolkata", "ahmedabad"
+  ];
+  for (const city of techHubs) {
     if (lowerText.includes(city)) {
       location = city.charAt(0).toUpperCase() + city.slice(1);
       break;
     }
   }
 
-  // 5. Line-by-Line Heuristics for Name, College, Department
+  // 5. Line-by-Line Label Search
   const lines = text.split("\n").map(line => line.trim()).filter(line => line.length > 0);
   
   for (const line of lines) {
@@ -62,20 +65,24 @@ const extractDataFromText = (text) => {
     }
   }
 
-  // Fallback for Name: If no explicit "Name:" label is found, grab the first non-garbage line
+  // 6. Smarter Name Fallback (Ignores garbage words)
   if (name === "Nil" && lines.length > 0) {
-    const possibleName = lines.find(l => 
-      !l.includes("@") && 
-      !/\d/.test(l) && // No numbers
-      l.length > 3 && 
-      l.length < 25 &&
-      !l.toLowerCase().includes("resume") &&
-      !l.toLowerCase().includes("profile")
-    );
+    const invalidNameWords = ["resume", "cv", "curriculum", "profile", "page", "contact", "email", "phone"];
+    
+    const possibleName = lines.find(line => {
+      const l = line.toLowerCase();
+      return (
+        !l.includes("@") && 
+        !/\d/.test(l) && // No numbers
+        l.length > 2 && 
+        l.length < 25 &&
+        !invalidNameWords.some(word => l.includes(word)) // Must not contain garbage words
+      );
+    });
     if (possibleName) name = possibleName;
   }
 
-  // Clean up college string if it found one
+  // 7. Clean up College String
   if (college !== "Nil") {
     college = college
       .replace(/Highest\s*Degree/gi, "")
@@ -90,7 +97,7 @@ const extractDataFromText = (text) => {
 };
 
 // ==========================================
-// MAIN UPLOAD CONTROLLER 
+// 🚀 MAIN UPLOAD CONTROLLER 
 // ==========================================
 export const processImages = async (req, res) => {
   try {
@@ -103,66 +110,73 @@ export const processImages = async (req, res) => {
     const results = [];
     const duplicates = [];
 
-    for (const file of files) {
-      const startTime = Date.now();
-      const originalPath = path.resolve(file.path);
+    // 🔥 PERFORMANCE UPGRADE: Initialize the OCR Worker ONCE for the whole batch
+    console.log("⚙️ Booting up Tesseract OCR Engine...");
+    const worker = await createWorker('eng');
 
-      try {
-        const fileBuffer = await fsPromises.readFile(originalPath);
-        const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    try {
+      for (const file of files) {
+        const startTime = Date.now();
+        const originalPath = path.resolve(file.path);
 
-        // 1. Duplicate Check
-        const existingRecord = await Record.findOne({ imageHash: hash }).lean();
-        if (existingRecord) {
-          duplicates.push(file.originalname);
-          await fsPromises.unlink(originalPath).catch(() => {});
-          continue; 
-        }
-
-        // 2. Perform OCR using tesseract.js
-        let ocrText = "";
-        const worker = await createWorker('eng');
         try {
-          console.log(`🤖 Performing OCR on ${file.originalname}...`);
+          const fileBuffer = await fsPromises.readFile(originalPath);
+          const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+          // 1. Duplicate Check
+          const existingRecord = await Record.findOne({ imageHash: hash }).lean();
+          if (existingRecord) {
+            console.log(`⏭️ Skipping duplicate: ${file.originalname}`);
+            duplicates.push(file.originalname);
+            await fsPromises.unlink(originalPath).catch(() => {});
+            continue; 
+          }
+
+          // 2. Run OCR
+          console.log(`📄 Reading ${file.originalname}...`);
           const { data: { text } } = await worker.recognize(originalPath);
-          ocrText = text;
-          console.log(`✅ Tesseract extracted ${ocrText.length} characters.`);
-        } catch (tesseractError) {
-          console.error("❌ Tesseract OCR failed:", tesseractError);
+          
+          // 3. Extract Structured Data
+          let extractedData = extractDataFromText(text);
+          
+          // Safety fallback: ensure name is never entirely empty
+          if (extractedData.name === "Nil" || !extractedData.name) {
+              extractedData.name = file.originalname.split('.')[0]; 
+          }
+
+          const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
+
+          // 4. Save to Database
+          const newRecord = await Record.create({
+            imageHash: hash,
+            ...extractedData,
+            loadingTime,
+          });
+
+          results.push(newRecord);
+          console.log(`✅ Successfully saved data for ${file.originalname}`);
+
+        } catch (fileError) {
+          console.error(`❌ Error processing file ${file.originalname}:`, fileError);
         } finally {
-          await worker.terminate();
+          // 5. Guaranteed cleanup of temp file on disk
+          await fsPromises.unlink(originalPath).catch(() => {});
         }
-
-        // 3. Parse the raw text into structured data
-        let extractedData = extractDataFromText(ocrText);
-        
-        // Fallback: If absolutely everything failed, at least keep the filename as the name
-        if (extractedData.name === "Nil") {
-            extractedData.name = file.originalname;
-        }
-
-        const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
-
-        // 4. Save Record to Database
-        const newRecord = await Record.create({
-          imageHash: hash,
-          ...extractedData,
-          loadingTime,
-        });
-
-        results.push(newRecord);
-
-      } catch (fileError) {
-        console.error(`❌ File processing error for ${file.originalname}:`, fileError);
-      } finally {
-        // 5. Clean up Node's local disk
-        await fsPromises.unlink(originalPath).catch(() => {});
       }
+    } finally {
+      // 🔥 Always terminate the worker after the loop, even if an error occurs
+      console.log("🛑 Shutting down Tesseract OCR Engine...");
+      await worker.terminate();
     }
 
-    res.status(200).json({ processed: results, duplicates });
+    res.status(200).json({ 
+      message: `Processed ${results.length} files, ${duplicates.length} duplicates skipped.`,
+      processed: results, 
+      duplicates 
+    });
+
   } catch (err) {
-    console.error("Upload Error:", err);
-    res.status(500).json({ error: "Server Error during processing." });
+    console.error("Upload Route Error:", err);
+    res.status(500).json({ error: "Server Error during batch processing." });
   }
 };
