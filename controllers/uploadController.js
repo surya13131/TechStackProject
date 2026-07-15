@@ -18,39 +18,36 @@ const extractDataFromText = (text) => {
   let department = "Nil";
   let platform = "Nil";
 
-  // 🛑 BUG FIX 1: Prevent destroying newlines. 
-  // Used [ \t]+ instead of \s+ to condense horizontal spaces while keeping \n
   const cleanedText = text
     .replace(/[\u200B-\u200D\uFEFF|~*^_{}[\]\\]/g, ' ')
     .replace(/[ \t]+/g, ' ') 
     .trim();
     
   const lowerText = cleanedText.toLowerCase();
-  
-  // Now this will actually split lines properly instead of creating one massive line
   const lines = cleanedText.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 2);
-  
-  // Create a flat text version for regexes that shouldn't care about line breaks (Email, Phone, Location)
   const flatText = cleanedText.replace(/\r?\n/g, ' '); 
 
-  // 1. Phone
-  const phoneRegex = /(?<!\d)(?:\+?91[\s-]?)?([6-9]\d{9})\b/;
-  const phoneMatch = flatText.match(phoneRegex);
+  // 1. PHONE EXTRACTION (FIXED)
+  // Strips all spaces, dots, dashes, and parentheses to fix OCR gaps (e.g., "90425 24167")
+  const textForPhone = flatText.replace(/[\s\-.\(\)]/g, ''); 
+  // Looks for optional +91 or 91, then captures exactly 10 digits starting with 6-9
+  const phoneRegex = /(?:(?:\+|v)?91)?([6-9]\d{9})(?!\d)/;
+  const phoneMatch = textForPhone.match(phoneRegex);
   if (phoneMatch) phone = phoneMatch[1]; 
 
-  // 2. Email
-  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b/;
+  // 2. EMAIL EXTRACTION
+  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b/i;
   const emailMatch = flatText.match(emailRegex);
   if (emailMatch) email = emailMatch[0].toLowerCase();
 
-  // 3. Platform
+  // 3. PLATFORM EXTRACTION
   if (/\bnaukri\b/i.test(lowerText)) platform = "Naukri";
   else if (/\bshine\b/i.test(lowerText)) platform = "Shine";
   else if (/\blinkedin\b/i.test(lowerText)) platform = "LinkedIn";
   else if (/\bfoundit\b|\bmonster\b/i.test(lowerText)) platform = "Foundit";
   else if (/\bindeed\b/i.test(lowerText)) platform = "Indeed";
 
-  // 4. Location
+  // 4. LOCATION EXTRACTION
   const techHubs = ["chennai", "omr", "sholinganallur", "perungudi", "tidel park", "bangalore", "hyderabad", "pune", "mumbai", "coimbatore"];
   for (const city of techHubs) {
     if (new RegExp(`\\b${city}\\b`, 'i').test(flatText)) {
@@ -60,48 +57,50 @@ const extractDataFromText = (text) => {
   }
 
   // 5. COLLEGE & DEPARTMENT CLEANER (FIXED)
-  const uiGarbage = ["fresher", "chennai", "modified", "active", "yesterday", "v", "e", "u", "s", "no comments", "save", "print"];
+  const uiGarbage = ["fresher", "chennai", "modified", "active", "yesterday", "v", "e", "u", "s", "no comments", "save", "print", "nex", "qsave"];
   
   for (const line of lines) {
     const lowerLine = line.toLowerCase();
     
-    // Check if line contains college/university keywords
     if (/(university|college|institute|academy)/i.test(lowerLine)) {
-      // Step A: Remove UI garbage words from this line first
-      let cleanLine = line;
+      
+      // 🛑 STRICT FIX: Strip ALL numbers out so phone numbers/dates don't bleed into the college name
+      let cleanLine = line.replace(/[0-9]/g, ''); 
+      
+      // Step A: Remove UI garbage words
       uiGarbage.forEach(word => {
          const re = new RegExp(`\\b${word}\\b`, 'gi');
-         // Replace with space so words don't get mashed together
          cleanLine = cleanLine.replace(re, " "); 
       });
       
       // Step B: Split Degree/Dept
-      const degreePattern = /(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)/i;
+      const degreePattern = /\b(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)\b/i;
       const match = cleanLine.match(degreePattern);
       
       if (match) {
         department = match[0].toUpperCase().replace(/\./g, '');
-        cleanLine = cleanLine.replace(match[0], "").replace(/[:\-]/g, "").trim();
+        cleanLine = cleanLine.replace(match[0], "").replace(/[:\-]/g, " ").trim();
       } else {
-        cleanLine = cleanLine.replace(/[:\-]/g, "").trim();
+        cleanLine = cleanLine.replace(/[:\-]/g, " ").trim();
       }
 
-      // 🛑 BUG FIX 2: Targeted extraction so we don't accidentally grab a massive string
-      // Isolates 5 to 60 chars ending in the keyword, plus an optional "of Technology/Arts"
-      const targetedCollegeMatch = cleanLine.match(/([a-zA-Z.\s&]{5,60}\b(?:College|University|Institute|Academy)\b(?:\s+of\s+[a-zA-Z.\s&]+)?)/i);
+      // Step C: Targeted extraction for College Name
+      const targetedCollegeMatch = cleanLine.match(/([a-zA-Z\s.,&'-]{3,60}\b(?:College|University|Institute|Academy)\b(?:\s+of\s+[a-zA-Z\s.,&'-]+)?)/i);
       
       if (targetedCollegeMatch) {
-        college = targetedCollegeMatch[1].trim();
+        college = targetedCollegeMatch[1];
       } else {
-        // Fallback: If line is overly long, clip it so the UI doesn't break
-        college = cleanLine.length > 70 ? cleanLine.substring(0, 70) + "..." : cleanLine;
+        college = cleanLine;
       }
       
-      break; // Found our college line
+      // Final string cleanup
+      college = college.replace(/\s+/g, ' ').trim();
+      college = college.replace(/[,.]$/, '').trim(); // Remove trailing commas or dots
+      break; 
     }
   }
 
-  // 6. IMPROVED NAME SPLITTER
+  // 6. NAME SPLITTER
   if (email !== "Nil") {
     const emailPrefix = email.split('@')[0];
     let nameParts = emailPrefix.replace(/[0-9]/g, '').replace(/[._-]/g, ' ').trim();
@@ -110,11 +109,10 @@ const extractDataFromText = (text) => {
         nameParts = nameParts.replace(/([a-z])([A-Z])/g, '$1 $2');
     }
     
-    name = nameParts.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    if (nameParts.length > 1) {
+       name = nameParts.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
   }
-
-  // Clean up any double spaces generated by our replacements
-  college = college.replace(/\s+/g, ' ').trim();
 
   return { 
     name: name || "Nil", 
@@ -158,7 +156,17 @@ export const processImages = async (req, res) => {
           const { data: { text } } = await worker.recognize(originalPath);
           let extractedData = extractDataFromText(text);
           
-          if (extractedData.name === "Nil") extractedData.name = file.originalname.split('.')[0]; 
+          // 🛑 NAME FIX: Prevent names from being just numbers (e.g. from a phone-number filename)
+          if (!extractedData.name || extractedData.name === "Nil" || /^\d+$/.test(extractedData.name.replace(/\s/g, ''))) {
+             let potentialName = file.originalname.split('.')[0].replace(/[_-]/g, ' ').trim();
+             
+             // If the filename itself is just digits, reject it and keep "Nil"
+             if (/^\d+$/.test(potentialName.replace(/\s/g, ''))) {
+                 extractedData.name = "Nil";
+             } else {
+                 extractedData.name = potentialName;
+             }
+          }
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           const newRecord = await Record.create({ imageHash: hash, ...extractedData, loadingTime });
