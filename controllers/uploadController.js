@@ -8,7 +8,7 @@ import Record from "../models/Record.js";
 
 const fsPromises = fs.promises;
 
-// Initialize Gemini
+// Initialize Gemini (Single Instance)
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
@@ -70,6 +70,7 @@ export const processImages = async (req, res) => {
         let extractedFields = {};
         const base64Image = fileBuffer.toString("base64");
 
+        // Consolidated, single prompt leveraging both image and OCR
         const prompt = `
           You are an exact data parsing tool. Look at the attached recruiter profile screenshot AND the raw OCR text below.
           
@@ -80,20 +81,24 @@ export const processImages = async (req, res) => {
           
           CRITICAL RULES:
           1. Use the OCR text to extract the data, but verify spelling against the image.
-          2. DO NOT HALLUCINATE OR GUESS.
-          3. If a field is not visible, you MUST return "Nil".
-          4. Phone numbers must contain only digits.
-          5. Platform must be strictly one of: "Naukri", "LinkedIn", "Foundit", "Shine", "Indeed", or "Nil".
+          2. DO NOT HALLUCINATE OR GUESS. Read ONLY visible text.
+          3. Candidate name is the largest bold name.
+          4. Extract the exact email and the complete 10-digit phone number.
+          5. Extract the latest degree and the college name only.
+          6. Ignore menus, advertisements, buttons, recruiter names and UI elements.
+          7. Platform must be strictly one of: "Naukri", "LinkedIn", "Foundit", "Shine", "Indeed", or "Nil".
+          8. If a field is not visible, you MUST return "Nil".
         `;
 
         try {
           if (!process.env.GEMINI_API_KEY) throw new Error("No API Key configured.");
 
+          // Single, clean Gemini API call using the current SDK structure
           const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: [
-              { inlineData: { mimeType: file.mimetype, data: base64Image } },
-              { text: prompt }
+              prompt,
+              { inlineData: { mimeType: file.mimetype, data: base64Image } }
             ],
             config: {
               temperature: 0.0,
@@ -147,7 +152,7 @@ export const processImages = async (req, res) => {
         // 5. Save Record to Database
         const newRecord = await Record.create({
           imageHash: hash,
-          ...extractedFields,
+          ...extractedFields, // Spreading validated fields cleanly
           loadingTime,
         });
 

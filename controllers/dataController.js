@@ -6,10 +6,8 @@ import Record from "../models/Record.js";
 // ==========================================
 export const getRecords = async (req, res) => {
   try {
-    // PERFORMANCE UPGRADE: .lean() returns plain JSON instead of heavy Mongoose documents, 
-    // massively speeding up the API response.
+    // PERFORMANCE UPGRADE: .lean() returns plain JSON
     const records = await Record.find().sort({ createdAt: -1 }).lean();
-    
     res.status(200).json(records);
   } catch (err) {
     console.error("❌ Error fetching records:", err);
@@ -24,13 +22,12 @@ export const updateRecord = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Validate the MongoDB ID format to prevent CastErrors crashing the server
+    // 1. Validate the MongoDB ID format
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid record ID format." });
     }
 
-    // 2. Destructure ONLY the fields we want to allow updates for.
-    // This strictly prevents overriding the imageHash, _id, loadingTime, or timestamps.
+    // 2. Destructure ONLY the fields allowed for update
     const { 
       name, 
       email, 
@@ -41,7 +38,6 @@ export const updateRecord = async (req, res) => {
       platform 
     } = req.body;
 
-    // 3. Build a secure payload
     const secureUpdate = { 
       name, 
       email, 
@@ -52,11 +48,11 @@ export const updateRecord = async (req, res) => {
       platform 
     };
 
-    // 4. Perform the update in MongoDB
+    // 3. Perform the update in MongoDB
     const updated = await Record.findByIdAndUpdate(
       id,
       { $set: secureUpdate },
-      { new: true, runValidators: true } // runValidators ensures Mongoose schema rules are respected
+      { new: true, runValidators: true } 
     ).lean(); 
     
     if (!updated) {
@@ -77,19 +73,16 @@ export const deleteRecord = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Validate the MongoDB ID format
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid record ID format." });
     }
 
-    // 2. Perform the deletion
     const deleted = await Record.findByIdAndDelete(id);
     
     if (!deleted) {
       return res.status(404).json({ error: "Record not found or already deleted." });
     }
 
-    // Returning the deletedId helps the React frontend filter it out of the UI instantly
     res.status(200).json({ 
       message: "Record deleted successfully.",
       deletedId: id 

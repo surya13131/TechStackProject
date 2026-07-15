@@ -4,7 +4,7 @@ import { processImages } from "../controllers/uploadController.js";
 import { 
   getRecords, 
   updateRecord, 
-  deleteRecord // <-- 1. Imported deleteRecord
+  deleteRecord 
 } from "../controllers/dataController.js";
 
 const router = express.Router();
@@ -22,7 +22,7 @@ const upload = multer({
   },
 });
 
-// Handle Multer Errors (e.g., wrong file type) gracefully
+// Handle Multer Errors gracefully
 const uploadMiddleware = (req, res, next) => {
   const uploadHandler = upload.array("images", 10);
   uploadHandler(req, res, function (err) {
@@ -37,6 +37,6 @@ const uploadMiddleware = (req, res, next) => {
 router.post("/upload", uploadMiddleware, processImages);
 router.get("/records", getRecords);
 router.put("/records/:id", updateRecord);
-router.delete("/records/:id", deleteRecord); // <-- 2. Added the DELETE route
+router.delete("/records/:id", deleteRecord);
 
 export default router;
