@@ -81,14 +81,19 @@ const detectPlatform = (text) => {
 
 const preprocessImage = async (inputPath, outputPath) => {
   try {
-    await sharp(inputPath)
+    const image = sharp(inputPath);
+    const meta = await image.metadata();
+    const width = meta.width;
+    const height = meta.height;
+
+    await image
       // Crop out unnecessary UI elements like sidebars, menus, and ads.
-      // Adjust these values based on the common layout of your screenshots.
+      // Use percentages to adapt to different screenshot resolutions.
       .extract({
-          left: 80,
-          top: 100,
-          width: 900,
-          height: 1300
+          left: Math.floor(width * 0.03),
+          top: Math.floor(height * 0.08),
+          width: Math.floor(width * 0.65),
+          height: Math.floor(height * 0.80)
       })
       .resize({ width: 2200, withoutEnlargement: true })
       .grayscale()
@@ -99,6 +104,7 @@ const preprocessImage = async (inputPath, outputPath) => {
       .toFile(outputPath);
     return true;
   } catch (error) {
+    console.error("Image preprocessing failed:", error);
     return false;
   }
 };
@@ -112,7 +118,7 @@ const extractWithGemini = async (imagePath) => {
   const base64Image = imageBuffer.toString("base64");
   
   const prompt = `
-    You are extracting ONE candidate profile.
+    You are reading ONE recruiter profile.
 
     Return ONLY JSON.
 
@@ -128,30 +134,36 @@ const extractWithGemini = async (imagePath) => {
 
     Rules:
 
-    1. Read ONLY visible text.
-    2. Never guess.
-    3. Never invent values.
-    4. If unreadable return "Nil".
-    5. Ignore menus.
-    6. Ignore navigation.
-    7. Ignore buttons.
-    8. Ignore recruiter information.
-    9. Ignore advertisements.
-    10. Ignore "Profile Details".
-    11. Ignore "Download Resume".
-    12. Ignore "Looking for Job".
+    Read only visible text.
+    Never guess.
+    Never infer.
+    Never reuse values.
+    Candidate name is usually the largest bold text.
+
+    Ignore:
+    - Profile Details
+    - Download Resume
+    - Jobs
+    - Buttons
+    - Icons
+    - Advertisements
+    - Recruiter menus
 
     Phone:
-    Only digits.
+    Return only digits.
 
     Email:
-    Exact email.
+    Return exact email.
 
     College:
-    Institute name only.
+    Return only institute name.
 
     Department:
-    Degree only.
+    Return only degree.
+
+    Platform must be one of "Naukri", "LinkedIn", "Foundit", "Shine", "Indeed", otherwise "Nil".
+
+    If anything is not visible, return "Nil".
 
     Return JSON only.
   `;
@@ -209,7 +221,8 @@ export const processImages = async (req, res) => {
           const response = await extractWithGemini(targetImagePath);
           
           // Safely parse the JSON response from Gemini
-          const text = response.text
+          const raw = response.response.text();
+          const text = raw
               .replace(/```json/g,"")
               .replace(/```/g,"")
               .trim();
@@ -232,18 +245,20 @@ export const processImages = async (req, res) => {
         }
 
         // --- Post-Processing and Validation ---
-        const phoneRegex = /(?:\+91[- ]?)?[6-9]\d{9}/;
+        const phoneRegex = /(?:\+91[\s-]?)?([6-9]\d{9})/;
         const phoneMatch = (extractedFields.phone || "").match(phoneRegex);
-        extractedFields.phone = phoneMatch ? phoneMatch[0].replace(/\D/g,"") : "Nil";
+        extractedFields.phone = phoneMatch ? phoneMatch[1] : "Nil";
 
         const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}/;
         const emailMatch = (extractedFields.email || "").match(emailRegex);
-        extractedFields.email = emailMatch ? emailMatch[0] : "Nil";
+        extractedFields.email = emailMatch ? emailMatch[0].toLowerCase() : "Nil";
 
         // Clean up college name from extra text
         extractedFields.college = (extractedFields.college || "")
-            .replace(/Highest degree/i,"")
-            .replace(/B\.?Sc|BCA|MCA|MBA|B\.?Tech|B\.?E\.?/gi,"")
+            .replace(/Highest\s*Degree/gi,"")
+            .replace(/Education/gi,"")
+            .replace(/B\.?Tech|B\.?E|BCA|MCA|MBA|B\.?Sc|M\.?Sc/gi,"")
+            .replace(/\s+/g," ")
             .trim();
 
         const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
