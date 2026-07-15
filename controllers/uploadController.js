@@ -56,23 +56,23 @@ const extractDataFromText = (text) => {
   for (const line of lines) {
     const lowerLine = line.toLowerCase();
     
-    if (lowerLine.startsWith("name:") || lowerLine.startsWith("candidate:")) {
-      name = line.replace(/^(name|candidate):/i, "").trim();
-    } else if (lowerLine.startsWith("college:") || lowerLine.startsWith("institute:") || lowerLine.startsWith("university:")) {
-      college = line.replace(/^(college|institute|university):/i, "").trim();
-    } else if (lowerLine.startsWith("department:") || lowerLine.startsWith("degree:") || lowerLine.startsWith("course:")) {
-      department = line.replace(/^(department|degree|course):/i, "").trim();
+    if (/(name|candidate):/i.test(lowerLine)) {
+      name = line.replace(/(name|candidate):/i, "").trim();
+    } else if (/(college|institute|university):/i.test(lowerLine)) {
+      college = line.replace(/(college|institute|university):/i, "").trim();
+    } else if (/(department|degree|course):/i.test(lowerLine)) {
+      department = line.replace(/(department|degree|course):/i, "").trim();
     }
   }
 
   // 6. Smarter Name Fallback (Ignores garbage words)
   if (name === "Nil" && lines.length > 0) {
-    const invalidNameWords = ["resume", "cv", "curriculum", "profile", "page", "contact", "email", "phone"];
+    const invalidNameWords = ["resume", "cv", "curriculum", "profile", "page", "contact", "email", "phone", "details"];
     
-    const possibleName = lines.find(line => {
+    const possibleName = lines.slice(0, 5).find(line => { // Search top 5 lines
       const l = line.toLowerCase();
       return (
-        !l.includes("@") && 
+        !l.includes("@") &&
         !/\d/.test(l) && // No numbers
         l.length > 2 && 
         l.length < 25 &&
