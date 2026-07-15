@@ -1,6 +1,5 @@
 import crypto from "crypto";
 import fs from "fs";
-import Tesseract from "tesseract.js";
 import sharp from "sharp";
 import { GoogleGenAI } from "@google/genai";
 import Record from "../models/Record.js";
@@ -59,17 +58,9 @@ const extractPhone = (text) => {
 };
 
 const extractEmail = (text) => {
-  if (!text || text === "Nil") return "Nil";
-  const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-  return match ? match[0].toLowerCase() : "Nil";
-};
-
-const isValidName = (text) => {
-  const invalidKeywords = /found|profiles|looking|resume|candidate|jobs|naukri|linkedin|shine|foundit|fresher|experience|applicable|student|details|notice|joiner|location|degree/i;
-  if (invalidKeywords.test(text) || text.length < 3 || text.length > 30) return false;
-  const lettersOnly = text.replace(/[^a-zA-Z]/g, '');
-  if (lettersOnly.length < 3) return false;
-  return true;
+    if (!text || text === "Nil") return "Nil";
+    const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    return match ? match[0].toLowerCase() : "Nil";
 };
 
 const cleanName = (text) => text.replace(/[^a-zA-Z\s.]/g, '').trim();
@@ -90,14 +81,21 @@ const detectPlatform = (text) => {
 
 const preprocessImage = async (inputPath, outputPath) => {
   try {
-    // Use a less aggressive preprocessing pipeline to preserve detail for OCR.
     await sharp(inputPath)
-      .resize({ width: 2500 }) // Increased size for better OCR
+      // Crop out unnecessary UI elements like sidebars, menus, and ads.
+      // Adjust these values based on the common layout of your screenshots.
+      .extract({
+          left: 80,
+          top: 100,
+          width: 900,
+          height: 1300
+      })
+      .resize({ width: 2200, withoutEnlargement: true })
       .grayscale()
       .normalize()
       .sharpen()
-      .modulate({ brightness: 1.1, saturation: 1 }) // Adjust brightness
-      .png() // Convert to PNG for consistency
+      .modulate({ brightness: 1.15, saturation: 1 })
+      .png()
       .toFile(outputPath);
     return true;
   } catch (error) {
@@ -109,137 +107,64 @@ const preprocessImage = async (inputPath, outputPath) => {
 // 4. GEMINI VISION ENGINE (PRIMARY)
 // ==========================================
 
-const extractWithGemini = async (imagePath, ocrText) => {
+const extractWithGemini = async (imagePath) => {
   const imageBuffer = await fsPromises.readFile(imagePath);
   const base64Image = imageBuffer.toString("base64");
   
   const prompt = `
-    You are reading ONE candidate profile screenshot.
-    Return ONLY this JSON.
+    You are extracting ONE candidate profile.
+
+    Return ONLY JSON.
+
     {
-     "name":"",
-     "email":"",
-     "phone":"",
-     "location":"",
-     "college":"",
-     "department":"",
-     "platform":""
+    "name":"",
+    "email":"",
+    "phone":"",
+    "location":"",
+    "college":"",
+    "department":"",
+    "platform":""
     }
 
     Rules:
-    - Read ONLY text visible in the screenshot.
-    - Never guess. Never infer hidden text. Never reuse values from previous images.
-    - If email is not visible return "Nil".
-    - If phone is partially visible return "Nil".
-    - If college is not visible return "Nil".
-    - Ignore menu items, buttons, and navigation.
-    - Ignore "Download Resume", "Candidate looking for job", and "Profile Details".
-    - Output only JSON.
-    
-    Here is the text extracted by OCR, use it as the source of truth:
-    --- OCR TEXT ---
-    ${ocrText}
+
+    1. Read ONLY visible text.
+    2. Never guess.
+    3. Never invent values.
+    4. If unreadable return "Nil".
+    5. Ignore menus.
+    6. Ignore navigation.
+    7. Ignore buttons.
+    8. Ignore recruiter information.
+    9. Ignore advertisements.
+    10. Ignore "Profile Details".
+    11. Ignore "Download Resume".
+    12. Ignore "Looking for Job".
+
+    Phone:
+    Only digits.
+
+    Email:
+    Exact email.
+
+    College:
+    Institute name only.
+
+    Department:
+    Degree only.
+
+    Return JSON only.
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-pro-vision", // Use a model that supports text and image inputs
+    model: "gemini-2.5-flash",
     contents: [
       { inlineData: { mimeType: "image/png", data: base64Image } },
       { text: prompt }
     ]
   });
 
-  // It's crucial to see the raw output before parsing.
-  console.log("🤖 RAW GEMINI OUTPUT:\n", response.text);
-
-  const rawText = response.text.replace(/```json/g, "").replace(/```/g, "").trim();
-  return JSON.parse(rawText);
-};
-
-// ==========================================
-// 5. TESSERACT ENGINE (FALLBACK)
-// ==========================================
-
-const parseNaukri = (lines, fullText) => {
-  const data = { name: "Nil", email: "Nil", phone: "Nil", college: "Nil", department: "Nil", location: findInDictionary(fullText, DICT_LOCATIONS) || "Nil", platform: "Naukri" };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lowerLine = line.toLowerCase();
-    if (data.name === "Nil" && lowerLine.includes("profiles found")) {
-      const windowText = lines.slice(i, i + 2).join(" ");
-      const pieces = windowText.split(/profiles found\s*>?/i);
-      if (pieces.length > 1) {
-        const potentialName = cleanName(pieces[1].split(/\s{2,}/)[0]); 
-        if (isValidName(potentialName)) data.name = potentialName;
-      }
-    }
-    if (lowerLine.includes("highest degree")) {
-      const eduBlock = lines.slice(i, i + 4).join(" ");
-      data.department = findInDictionary(eduBlock, DICT_DEGREES) || "Nil";
-      data.college = findInDictionary(eduBlock, DICT_COLLEGES) || "Nil";
-      if (data.college === "Nil") {
-        const collegeMatch = eduBlock.match(/([a-zA-Z\s.-]+(?:College|University|Institute|Academy|School)[a-zA-Z\s.-]*)/i);
-        if (collegeMatch) data.college = collegeMatch[1].trim();
-      }
-    }
-    if (data.email === "Nil" && line.includes("@")) data.email = extractEmail(line);
-    if (data.phone === "Nil" && /\d{10}/.test(line)) data.phone = extractPhone(line);
-  }
-  return data;
-};
-
-const parseShine = (lines, fullText) => {
-  const data = { name: "Nil", email: "Nil", phone: "Nil", college: "Nil", department: "Nil", location: findInDictionary(fullText, DICT_LOCATIONS) || "Nil", platform: "Shine" };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (data.email === "Nil" && line.includes("@")) data.email = extractEmail(line);
-    if (data.phone === "Nil" && /\+91[- ]?\d{10}/.test(line)) data.phone = extractPhone(line);
-    if (data.name === "Nil" && i < 5) {
-      const potentialName = cleanName(line);
-      if (isValidName(potentialName)) data.name = potentialName;
-    }
-    if (data.department === "Nil") {
-      const dept = findInDictionary(line, DICT_DEGREES);
-      if (dept) data.department = dept;
-    }
-  }
-  return data;
-};
-
-const parseGeneric = (lines, fullText) => {
-  const data = { name: "Nil", email: "Nil", phone: "Nil", college: "Nil", department: "Nil", location: findInDictionary(fullText, DICT_LOCATIONS) || "Nil", platform: "Nil" };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (data.email === "Nil" && line.includes("@")) data.email = extractEmail(line);
-    if (data.phone === "Nil" && /\d{10}/.test(line)) data.phone = extractPhone(line);
-    if (data.department === "Nil") {
-       const dept = findInDictionary(line, DICT_DEGREES);
-       if (dept) data.department = dept;
-    }
-    if (data.college === "Nil") {
-      const col = findInDictionary(line, DICT_COLLEGES);
-      if (col) data.college = col;
-      else if (/(college|university|institute|academy)/i.test(line) && !/(bachelor|master|degree)/i.test(line)) {
-        data.college = line.trim();
-      }
-    }
-  }
-  return data;
-};
-
-const extractWithTesseract = async (imagePath) => {
-  const { data } = await Tesseract.recognize(imagePath, "eng");
-  const normalizedText = data.text.replace(/rn/g, 'm').replace(/0/g, 'O'); 
-  const lines = normalizedText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-  const fullText = lines.join(" ");
-  const platform = detectPlatform(fullText);
-
-  if (platform === "Naukri") return parseNaukri(lines, fullText);
-  if (platform === "Shine") return parseShine(lines, fullText);
-  
-  const genericData = parseGeneric(lines, fullText);
-  genericData.platform = platform; 
-  return genericData;
+  return response;
 };
 
 // ==========================================
@@ -276,49 +201,50 @@ export const processImages = async (req, res) => {
         const preprocessingSuccess = await preprocessImage(originalPath, preprocessedPath);
         const targetImagePath = preprocessingSuccess ? preprocessedPath : originalPath;
 
-        // --- New Hybrid Pipeline Step 1: Always run Tesseract first ---
-        const { data: ocrData } = await Tesseract.recognize(targetImagePath, "eng");
-        const normalizedOcrText = ocrData.text.replace(/rn/g, 'm').replace(/0/g, 'O');
-        const ocrLines = normalizedOcrText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-        const fullOcrText = ocrLines.join(" ");
-
         let extractedFields;
-        let usedTesseractFallback = false;
 
-        // --- New Hybrid Pipeline Step 2: Try Gemini with Image + OCR Text ---
+        // --- Primary Extraction Engine: Gemini ---
         try {
           if (!process.env.GEMINI_API_KEY) throw new Error("No API Key configured in environment variables.");
-          extractedFields = await extractWithGemini(targetImagePath, fullOcrText);
+          const response = await extractWithGemini(targetImagePath);
+          
+          // Safely parse the JSON response from Gemini
+          const text = response.text
+              .replace(/```json/g,"")
+              .replace(/```/g,"")
+              .trim();
+          extractedFields = JSON.parse(text);
+
           console.log(`✅ Gemini successfully parsed: ${file.originalname}`);
-        } catch (geminiError) {
-          console.error(`❌ GEMINI API FAILED for ${file.originalname}`);
-          console.error(`🔍 ERROR DETAILS:`, geminiError.message || geminiError);
-          console.warn(`⚠️ Falling back to Tesseract OCR...`);
-          extractedFields = await extractWithTesseract(targetImagePath);
-          usedTesseractFallback = true;
+
+        } catch (err) {
+          console.error(`❌ Gemini processing failed for ${file.originalname}:`, err.message);
+          // If Gemini fails, create a default "Nil" object to avoid crashing.
+          extractedFields = {
+              name:"Nil",
+              email:"Nil",
+              phone:"Nil",
+              location:"Nil",
+              college:"Nil",
+              department:"Nil",
+              platform:"Nil"
+          };
         }
 
-        // --- VALIDATION & CORRECTION GATE ---
-        // As you correctly pointed out, never trust the LLM for fixed-format data.
-        // Use regex on the full OCR text as the source of truth for phone and email.
-        const phoneMatch = fullOcrText.match(/(?:\+91[- ]?)?[6-9]\d{9}/);
-        const phoneFromRegex = phoneMatch ? phoneMatch[0].replace(/\D/g, "").slice(-10) : "Nil";
-        const emailFromRegex = extractEmail(fullOcrText) || "Nil";
+        // --- Post-Processing and Validation ---
+        const phoneRegex = /(?:\+91[- ]?)?[6-9]\d{9}/;
+        const phoneMatch = (extractedFields.phone || "").match(phoneRegex);
+        extractedFields.phone = phoneMatch ? phoneMatch[0].replace(/\D/g,"") : "Nil";
 
-        extractedFields.phone = phoneFromRegex;
-        extractedFields.email = emailFromRegex;
+        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}/;
+        const emailMatch = (extractedFields.email || "").match(emailRegex);
+        extractedFields.email = emailMatch ? emailMatch[0] : "Nil";
 
-        // If Gemini's output is invalid (e.g., bad name), use Tesseract parser as a fallback.
-        console.log("Validating Gemini name:", extractedFields.name); // Log the name for debugging.
-        if (!usedTesseractFallback && !isValidName(extractedFields.name || "")) {
-            console.warn(`⚠️ Gemini output for ${file.originalname} has invalid name. Re-running with Tesseract.`);
-            const tesseractFields = await extractWithTesseract(targetImagePath);
-            // Merge results, preferring Tesseract's name but keeping other Gemini fields if valid.
-            if (isValidName(tesseractFields.name)) extractedFields.name = tesseractFields.name;
-            if (extractedFields.department === "Nil") extractedFields.department = tesseractFields.department;
-            if (extractedFields.college === "Nil") extractedFields.college = tesseractFields.college;
-            if (extractedFields.location === "Nil") extractedFields.location = tesseractFields.location;
-        }
+        // Clean up college name from extra text
+        extractedFields.college = (extractedFields.college || "")
+            .replace(/Highest degree/i,"")
+            .replace(/B\.?Sc|BCA|MCA|MBA|B\.?Tech|B\.?E\.?/gi,"")
+            .trim();
 
         const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
 
