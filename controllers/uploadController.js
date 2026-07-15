@@ -7,7 +7,7 @@ import Record from "../models/Record.js";
 const fsPromises = fs.promises;
 
 // ==========================================
-// 🧠 ADVANCED EXTRACTION ENGINE (FIXED SPLITTER)
+// 🧠 FINE-TUNED EXTRACTION ENGINE
 // ==========================================
 const extractDataFromText = (text) => {
   let name = "Nil";
@@ -40,7 +40,7 @@ const extractDataFromText = (text) => {
   else if (/\bindeed\b/i.test(lowerText)) platform = "Indeed";
 
   // 4. Location
-  const techHubs = ["chennai", "omr", "sholinganallur", "perungudi", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", "delhi", "noida", "gurugram", "gurgaon", "coimbatore"];
+  const techHubs = ["chennai", "omr", "sholinganallur", "perungudi", "tidel park", "bangalore", "hyderabad", "pune", "mumbai", "coimbatore"];
   for (const city of techHubs) {
     if (new RegExp(`\\b${city}\\b`, 'i').test(cleanedText)) {
       location = city.length <= 3 ? city.toUpperCase() : city.charAt(0).toUpperCase() + city.slice(1);
@@ -48,45 +48,47 @@ const extractDataFromText = (text) => {
     }
   }
 
-  // 5. DEPARTMENT/COLLEGE SPLITTER (The fix)
-  // Look for education lines. If a line starts with a degree, split it.
-  const degreePattern = /(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)/i;
+  // 5. COLLEGE & DEPARTMENT CLEANER
+  const uiGarbage = ["fresher", "chennai", "modified", "active", "yesterday", "v", "e", "u", "s", "no comments", "save", "print"];
   
   for (const line of lines) {
-    // Check if the line looks like an education entry
-    if (/(university|college|institute|academy|polytechnic|b\.?tech|b\.?sc|b\.?c\.?a)/i.test(line)) {
-      const match = line.match(degreePattern);
+    const lowerLine = line.toLowerCase();
+    
+    // Check if line contains college/university keywords
+    if (/(university|college|institute|academy)/i.test(lowerLine)) {
+      // Step A: Remove UI garbage words from this line first
+      let cleanLine = line;
+      uiGarbage.forEach(word => {
+         const re = new RegExp(`\\b${word}\\b`, 'gi');
+         cleanLine = cleanLine.replace(re, "");
+      });
+      
+      // Step B: Split Degree/Dept
+      const degreePattern = /(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)/i;
+      const match = cleanLine.match(degreePattern);
       
       if (match) {
-        // We found a degree at the start!
-        department = match[0].toUpperCase().replace(/\./g, ''); // e.g., "B.C.A." -> "BCA"
-        college = line.replace(match[0], "").replace(/highest degree|education|qualification|[:\-]/gi, "").trim();
+        department = match[0].toUpperCase().replace(/\./g, '');
+        college = cleanLine.replace(match[0], "").replace(/[:\-]/g, "").trim();
       } else {
-        // No specific degree found at start, just extract the whole thing as college
-        college = line.replace(/highest degree|education|qualification|[:\-]/gi, "").trim();
+        college = cleanLine.replace(/[:\-]/g, "").trim();
       }
-      break; // Stop after finding the education line
+      break; // Found our college line
     }
   }
 
-  // 6. Fallback: If department still Nil, check keyword list
-  if (department === "Nil") {
-    const deptKeywords = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "MCA", "BCA", "MBA"];
-    for (const d of deptKeywords) {
-      if (lowerText.includes(d.toLowerCase())) {
-        department = d;
-        break;
-      }
-    }
-  }
-
-  // 7. Name Inference
+  // 6. IMPROVED NAME SPLITTER (Handling "Surya.v" -> "Surya V")
   if (email !== "Nil") {
     const emailPrefix = email.split('@')[0];
-    const cleanedPrefix = emailPrefix.replace(/[0-9]/g, '').replace(/[._-]/g, ' ').trim();
-    if (cleanedPrefix.length > 2) {
-      name = cleanedPrefix.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    // Remove numbers and replace dots/underscores/dashes with space
+    let nameParts = emailPrefix.replace(/[0-9]/g, '').replace(/[._-]/g, ' ').trim();
+    
+    // If still mashed (e.g. "Suryav"), insert space before last capital
+    if (!nameParts.includes(' ')) {
+        nameParts = nameParts.replace(/([a-z])([A-Z])/g, '$1 $2');
     }
+    
+    name = nameParts.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
   }
 
   return { 
@@ -94,7 +96,7 @@ const extractDataFromText = (text) => {
     email, 
     phone, 
     location, 
-    college: college || "Nil", 
+    college: college.length > 5 ? college : "Nil", 
     department: department || "Nil", 
     platform 
   };
