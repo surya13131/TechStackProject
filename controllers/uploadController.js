@@ -95,7 +95,7 @@ export const processImages = async (req, res) => {
 
           // Single, clean Gemini API call using the current SDK structure
           const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+      model: "gemini-2.0-flash",
             contents: [
               prompt,
               { inlineData: { mimeType: file.mimetype, data: base64Image } }
