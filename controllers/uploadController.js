@@ -20,9 +20,9 @@ const extractDataFromText = (text) => {
 
   // 1. Clean the text and remove URL artifacts that confuse the parser
   const cleanedText = text
-    .replace(/[\u200B-\u200D\uFEFF|~*^_{}[\]\\]/g, ' ') // Remove artifacts
-    .replace(/https?:\/\/[^\s]+/g, '') // Strip URLs completely so they don't trigger false phone/email hits
-    .replace(/\s+/g, ' ') // Normalize spaces
+    .replace(/[\u200B-\u200D\uFEFF|~*^_{}[\]\\]/g, ' ') 
+    .replace(/https?:\/\/[^\s]+/g, '') 
+    .replace(/\s+/g, ' ') 
     .trim();
     
   const lowerText = cleanedText.toLowerCase();
@@ -31,9 +31,10 @@ const extractDataFromText = (text) => {
   // 1. EXACT FORMAT MATCHING (Phone, Email, Platform)
   // ---------------------------------------------------------
   
-  // Phone: Strict word boundaries \b to prevent catching random IDs. 
-  // Looks for 10 digits starting with 6-9, optionally preceded by +91 or 0.
-  const phoneRegex = /\b(?:\+?91[\s-]?)?([6-9]\d{9})\b/;
+  // 🔥 THE FIX: Negative Lookbehind (?<!\d) 
+  // It allows the +91 country code to pass through perfectly while 
+  // still blocking it from pulling 10 digits out of a 20-digit URL ID.
+  const phoneRegex = /(?<!\d)(?:\+?91[\s-]?)?([6-9]\d{9})\b/;
   const phoneMatch = cleanedText.match(phoneRegex);
   if (phoneMatch) phone = phoneMatch[1]; 
 
@@ -65,44 +66,42 @@ const extractDataFromText = (text) => {
     }
   }
 
-  // Department: Target exact phrase matches anywhere in the blob
-  const deptRegex = /\b(Computer Science|Information Technology|Electronics|Electrical|Mechanical|Civil|Data Science|Artificial Intelligence|B\.?Tech in CSE|B\.?Tech in IT|CSE|ECE|EEE|MECH|IT)\b/i;
+  // Department: Added MCA, BCA, MBA to the exact phrase matcher
+  const deptRegex = /\b(Computer Science|Information Technology|Electronics|Electrical|Mechanical|Civil|Data Science|Artificial Intelligence|B\.?Tech in CSE|B\.?Tech in IT|CSE|ECE|EEE|MECH|IT|MCA|BCA|MBA)\b/i;
   const deptMatch = cleanedText.match(deptRegex);
   if (deptMatch) {
     const rawDept = deptMatch[1].toUpperCase();
-    // Normalize common abbreviations
     if (rawDept.includes("COMPUTER SCIENCE") || rawDept === "CSE") department = "CSE";
     else if (rawDept.includes("INFORMATION TECH") || rawDept === "IT") department = "IT";
     else if (rawDept.includes("ELECTRONICS") || rawDept === "ECE") department = "ECE";
     else if (rawDept.includes("ELECTRICAL") || rawDept === "EEE") department = "EEE";
     else if (rawDept.includes("MECHANICAL") || rawDept === "MECH") department = "Mechanical";
-    else department = rawDept;
+    else department = rawDept.replace(/\./g, ''); // E.g., formats B.Tech to clean MCA/MBA
   }
 
   // ---------------------------------------------------------
-  // 3. TARGETED COLLEGE EXTRACTION (Fixes the giant blob issue)
+  // 3. TARGETED COLLEGE EXTRACTION 
   // ---------------------------------------------------------
   
-  // Hunts for the word College/University and extracts only the 30 characters before and 20 characters after it.
-  const collegeRegex = /([A-Za-z\s&.,-]{5,40}(?:College|University|Institute|Academy|Polytechnic)[A-Za-z\s&.,-]{0,20})/i;
+  // Hunts for College/University/Institute and grabs the surrounding phrase.
+  // Expanded to ensure it catches long names like "Hindustan Institute Of Technology And Science"
+  const collegeRegex = /([A-Za-z\s&.,-]{5,50}(?:College|University|Institute|Academy|Polytechnic)[A-Za-z\s&.,-]{0,25})/i;
   const collegeMatch = cleanedText.match(collegeRegex);
   
   if (collegeMatch) {
-    // Clean up the extracted phrase
     let extractedCollege = collegeMatch[1]
       .replace(/highest degree|education|qualification|passed out|graduated/gi, "")
-      .replace(/^[,\s\-]+|[,\s\-]+$/g, "") // Remove trailing/leading commas or spaces
+      .replace(/^[,\s\-]+|[,\s\-]+$/g, "") 
       .trim();
       
-    // Enforce an absolute maximum length so it never breaks the UI table again
-    college = extractedCollege.length > 50 ? extractedCollege.substring(0, 50) + "..." : extractedCollege;
+    college = extractedCollege.length > 55 ? extractedCollege.substring(0, 55) + "..." : extractedCollege;
   }
 
   // ---------------------------------------------------------
   // 4. INFERENCE FALLBACKS (Name)
   // ---------------------------------------------------------
   
-  // Name extraction from email (Most reliable non-AI method for resumes)
+  // We use the email prefix to guess the name because OCR completely shreds the UI headers on Naukri.
   if (email !== "Nil") {
     const emailPrefix = email.split('@')[0];
     const cleanedPrefix = emailPrefix.replace(/[0-9]/g, '').replace(/[._-]/g, ' ').trim();
@@ -161,7 +160,6 @@ export const processImages = async (req, res) => {
           // Extract Structured Data
           let extractedData = extractDataFromText(text);
           
-          // Absolute Last Resort for Name
           if (extractedData.name === "Nil") {
               extractedData.name = file.originalname.split('.')[0]; 
           }
