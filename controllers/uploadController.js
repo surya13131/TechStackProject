@@ -7,7 +7,7 @@ import Record from "../models/Record.js";
 const fsPromises = fs.promises;
 
 // ==========================================
-// 🧠 TARGETED SUBSTRING EXTRACTION ENGINE
+// 🧠 ADVANCED EXTRACTION ENGINE (FIXED SPLITTER)
 // ==========================================
 const extractDataFromText = (text) => {
   let name = "Nil";
@@ -18,47 +18,29 @@ const extractDataFromText = (text) => {
   let department = "Nil";
   let platform = "Nil";
 
-  // 1. Clean the text and remove URL artifacts that confuse the parser
-  const cleanedText = text
-    .replace(/[\u200B-\u200D\uFEFF|~*^_{}[\]\\]/g, ' ') 
-    .replace(/https?:\/\/[^\s]+/g, '') 
-    .replace(/\s+/g, ' ') 
-    .trim();
-    
+  const cleanedText = text.replace(/[\u200B-\u200D\uFEFF|~*^_{}[\]\\]/g, ' ').replace(/\s+/g, ' ').trim();
   const lowerText = cleanedText.toLowerCase();
+  const lines = cleanedText.split("\n").map(line => line.trim()).filter(line => line.length > 2);
 
-  // ---------------------------------------------------------
-  // 1. EXACT FORMAT MATCHING (Phone, Email, Platform)
-  // ---------------------------------------------------------
-  
-  // 🔥 THE FIX: Negative Lookbehind (?<!\d) 
-  // It allows the +91 country code to pass through perfectly while 
-  // still blocking it from pulling 10 digits out of a 20-digit URL ID.
+  // 1. Phone
   const phoneRegex = /(?<!\d)(?:\+?91[\s-]?)?([6-9]\d{9})\b/;
   const phoneMatch = cleanedText.match(phoneRegex);
   if (phoneMatch) phone = phoneMatch[1]; 
 
-  // Email: Standard structure
+  // 2. Email
   const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b/;
   const emailMatch = cleanedText.match(emailRegex);
   if (emailMatch) email = emailMatch[0].toLowerCase();
 
-  // Platform: Word boundary matches
+  // 3. Platform
   if (/\bnaukri\b/i.test(lowerText)) platform = "Naukri";
   else if (/\bshine\b/i.test(lowerText)) platform = "Shine";
   else if (/\blinkedin\b/i.test(lowerText)) platform = "LinkedIn";
   else if (/\bfoundit\b|\bmonster\b/i.test(lowerText)) platform = "Foundit";
   else if (/\bindeed\b/i.test(lowerText)) platform = "Indeed";
 
-  // ---------------------------------------------------------
-  // 2. DICTIONARY MATCHING (Location & Dept)
-  // ---------------------------------------------------------
-  
-  const techHubs = [
-    "chennai", "omr", "sholinganallur", "perungudi", "tidel park", 
-    "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", 
-    "delhi", "noida", "gurugram", "gurgaon", "coimbatore", "kochi"
-  ];
+  // 4. Location
+  const techHubs = ["chennai", "omr", "sholinganallur", "perungudi", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", "delhi", "noida", "gurugram", "gurgaon", "coimbatore"];
   for (const city of techHubs) {
     if (new RegExp(`\\b${city}\\b`, 'i').test(cleanedText)) {
       location = city.length <= 3 ? city.toUpperCase() : city.charAt(0).toUpperCase() + city.slice(1);
@@ -66,42 +48,39 @@ const extractDataFromText = (text) => {
     }
   }
 
-  // Department: Added MCA, BCA, MBA to the exact phrase matcher
-  const deptRegex = /\b(Computer Science|Information Technology|Electronics|Electrical|Mechanical|Civil|Data Science|Artificial Intelligence|B\.?Tech in CSE|B\.?Tech in IT|CSE|ECE|EEE|MECH|IT|MCA|BCA|MBA)\b/i;
-  const deptMatch = cleanedText.match(deptRegex);
-  if (deptMatch) {
-    const rawDept = deptMatch[1].toUpperCase();
-    if (rawDept.includes("COMPUTER SCIENCE") || rawDept === "CSE") department = "CSE";
-    else if (rawDept.includes("INFORMATION TECH") || rawDept === "IT") department = "IT";
-    else if (rawDept.includes("ELECTRONICS") || rawDept === "ECE") department = "ECE";
-    else if (rawDept.includes("ELECTRICAL") || rawDept === "EEE") department = "EEE";
-    else if (rawDept.includes("MECHANICAL") || rawDept === "MECH") department = "Mechanical";
-    else department = rawDept.replace(/\./g, ''); // E.g., formats B.Tech to clean MCA/MBA
-  }
-
-  // ---------------------------------------------------------
-  // 3. TARGETED COLLEGE EXTRACTION 
-  // ---------------------------------------------------------
+  // 5. DEPARTMENT/COLLEGE SPLITTER (The fix)
+  // Look for education lines. If a line starts with a degree, split it.
+  const degreePattern = /(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)/i;
   
-  // Hunts for College/University/Institute and grabs the surrounding phrase.
-  // Expanded to ensure it catches long names like "Hindustan Institute Of Technology And Science"
-  const collegeRegex = /([A-Za-z\s&.,-]{5,50}(?:College|University|Institute|Academy|Polytechnic)[A-Za-z\s&.,-]{0,25})/i;
-  const collegeMatch = cleanedText.match(collegeRegex);
-  
-  if (collegeMatch) {
-    let extractedCollege = collegeMatch[1]
-      .replace(/highest degree|education|qualification|passed out|graduated/gi, "")
-      .replace(/^[,\s\-]+|[,\s\-]+$/g, "") 
-      .trim();
+  for (const line of lines) {
+    // Check if the line looks like an education entry
+    if (/(university|college|institute|academy|polytechnic|b\.?tech|b\.?sc|b\.?c\.?a)/i.test(line)) {
+      const match = line.match(degreePattern);
       
-    college = extractedCollege.length > 55 ? extractedCollege.substring(0, 55) + "..." : extractedCollege;
+      if (match) {
+        // We found a degree at the start!
+        department = match[0].toUpperCase().replace(/\./g, ''); // e.g., "B.C.A." -> "BCA"
+        college = line.replace(match[0], "").replace(/highest degree|education|qualification|[:\-]/gi, "").trim();
+      } else {
+        // No specific degree found at start, just extract the whole thing as college
+        college = line.replace(/highest degree|education|qualification|[:\-]/gi, "").trim();
+      }
+      break; // Stop after finding the education line
+    }
   }
 
-  // ---------------------------------------------------------
-  // 4. INFERENCE FALLBACKS (Name)
-  // ---------------------------------------------------------
-  
-  // We use the email prefix to guess the name because OCR completely shreds the UI headers on Naukri.
+  // 6. Fallback: If department still Nil, check keyword list
+  if (department === "Nil") {
+    const deptKeywords = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "MCA", "BCA", "MBA"];
+    for (const d of deptKeywords) {
+      if (lowerText.includes(d.toLowerCase())) {
+        department = d;
+        break;
+      }
+    }
+  }
+
+  // 7. Name Inference
   if (email !== "Nil") {
     const emailPrefix = email.split('@')[0];
     const cleanedPrefix = emailPrefix.replace(/[0-9]/g, '').replace(/[._-]/g, ' ').trim();
@@ -110,12 +89,15 @@ const extractDataFromText = (text) => {
     }
   }
 
-  // Final cleanup bounds
-  if (!name || name.trim() === "") name = "Nil";
-  if (!college || college.trim() === "") college = "Nil";
-  if (!department || department.trim() === "") department = "Nil";
-
-  return { name, email, phone, location, college, department, platform };
+  return { 
+    name: name || "Nil", 
+    email, 
+    phone, 
+    location, 
+    college: college || "Nil", 
+    department: department || "Nil", 
+    platform 
+  };
 };
 
 // ==========================================
@@ -124,15 +106,10 @@ const extractDataFromText = (text) => {
 export const processImages = async (req, res) => {
   try {
     const files = req.files;
-
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded." });
-    }
+    if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded." });
 
     const results = [];
     const duplicates = [];
-
-    console.log("⚙️ Booting up Tesseract OCR Engine...");
     const worker = await createWorker('eng');
 
     try {
@@ -144,57 +121,34 @@ export const processImages = async (req, res) => {
           const fileBuffer = await fsPromises.readFile(originalPath);
           const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
-          // Duplicate Check
           const existingRecord = await Record.findOne({ imageHash: hash }).lean();
           if (existingRecord) {
-            console.log(`⏭️ Skipping duplicate: ${file.originalname}`);
             duplicates.push(file.originalname);
             await fsPromises.unlink(originalPath).catch(() => {});
             continue; 
           }
 
-          // Run OCR
-          console.log(`📄 Reading ${file.originalname}...`);
           const { data: { text } } = await worker.recognize(originalPath);
-          
-          // Extract Structured Data
           let extractedData = extractDataFromText(text);
           
-          if (extractedData.name === "Nil") {
-              extractedData.name = file.originalname.split('.')[0]; 
-          }
+          if (extractedData.name === "Nil") extractedData.name = file.originalname.split('.')[0]; 
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
-
-          // Save to Database
-          const newRecord = await Record.create({
-            imageHash: hash,
-            ...extractedData,
-            loadingTime,
-          });
+          const newRecord = await Record.create({ imageHash: hash, ...extractedData, loadingTime });
 
           results.push(newRecord);
-          console.log(`✅ Successfully saved data for ${file.originalname}`);
-
-        } catch (fileError) {
-          console.error(`❌ Error processing file ${file.originalname}:`, fileError);
+        } catch (err) {
+          console.error(`Error: ${file.originalname}`, err);
         } finally {
           await fsPromises.unlink(originalPath).catch(() => {});
         }
       }
     } finally {
-      console.log("🛑 Shutting down Tesseract OCR Engine...");
       await worker.terminate();
     }
 
-    res.status(200).json({ 
-      message: `Processed ${results.length} files, ${duplicates.length} duplicates skipped.`,
-      processed: results, 
-      duplicates 
-    });
-
+    res.status(200).json({ processed: results, duplicates });
   } catch (err) {
-    console.error("Upload Route Error:", err);
-    res.status(500).json({ error: "Server Error during batch processing." });
+    res.status(500).json({ error: "Server Error." });
   }
 };
