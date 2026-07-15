@@ -89,12 +89,6 @@ const preprocessImage = async (inputPath, outputPath) => {
     await image
       // Crop out unnecessary UI elements like sidebars, menus, and ads.
       // Use percentages to adapt to different screenshot resolutions.
-      .extract({
-          left: Math.floor(width * 0.03),
-          top: Math.floor(height * 0.08),
-          width: Math.floor(width * 0.65),
-          height: Math.floor(height * 0.80)
-      })
       .resize({ width: 2200, withoutEnlargement: true })
       .grayscale()
       .normalize()
@@ -222,6 +216,9 @@ export const processImages = async (req, res) => {
           
           // Safely parse the JSON response from Gemini
           const raw = response.response.text();
+          console.log("============== GEMINI RAW ==============");
+          console.log(raw);
+          console.log("========================================");
           const text = raw
               .replace(/```json/g,"")
               .replace(/```/g,"")
@@ -231,7 +228,7 @@ export const processImages = async (req, res) => {
           console.log(`✅ Gemini successfully parsed: ${file.originalname}`);
 
         } catch (err) {
-          console.error(`❌ Gemini processing failed for ${file.originalname}:`, err.message);
+          console.error(`❌ Gemini processing failed for ${file.originalname}:`, err);
           // If Gemini fails, create a default "Nil" object to avoid crashing.
           extractedFields = {
               name:"Nil",
