@@ -27,13 +27,19 @@ const extractDataFromText = (text) => {
   const lines = cleanedText.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 2);
   const flatText = cleanedText.replace(/\r?\n/g, ' '); 
 
-  // 1. PHONE EXTRACTION (FIXED)
-  // Strips all spaces, dots, dashes, and parentheses to fix OCR gaps (e.g., "90425 24167")
-  const textForPhone = flatText.replace(/[\s\-.\(\)]/g, ''); 
-  // Looks for optional +91 or 91, then captures exactly 10 digits starting with 6-9
-  const phoneRegex = /(?:(?:\+|v)?91)?([6-9]\d{9})(?!\d)/;
-  const phoneMatch = textForPhone.match(phoneRegex);
-  if (phoneMatch) phone = phoneMatch[1]; 
+  // 1. PHONE EXTRACTION (ULTIMATE FIX)
+  // Extracts 10 digits starting with 6-9, allowing spaces/dashes, BUT explicitly rejecting numbers 
+  // attached to URLs, letters, or query parameters (like =, &, ?) to avoid session IDs like "8556260561"
+  const phoneRegex = /(?<![a-zA-Z0-9=&?])(?:\+?91[\s-]?)?([6-9][\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d[\s-]?\d)(?![a-zA-Z0-9=&?])/g;
+  const phoneMatches = [...flatText.matchAll(phoneRegex)];
+  
+  for (const m of phoneMatches) {
+     const cleanNum = m[1].replace(/[\s-]/g, '');
+     if (cleanNum.length === 10) {
+        phone = cleanNum;
+        break; // Stop at the first valid, clean mobile number
+     }
+  }
 
   // 2. EMAIL EXTRACTION
   const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b/i;
@@ -57,23 +63,21 @@ const extractDataFromText = (text) => {
   }
 
   // 5. COLLEGE & DEPARTMENT CLEANER (FIXED)
-  const uiGarbage = ["fresher", "chennai", "modified", "active", "yesterday", "v", "e", "u", "s", "no comments", "save", "print", "nex", "qsave"];
+  // 🛑 Added "highest degree", "highest", and "degree" to the garbage collection
+  const uiGarbage = ["highest degree", "highest", "degree", "fresher", "chennai", "modified", "active", "yesterday", "v", "e", "u", "s", "no comments", "save", "print", "nex", "qsave"];
   
   for (const line of lines) {
     const lowerLine = line.toLowerCase();
     
     if (/(university|college|institute|academy)/i.test(lowerLine)) {
       
-      // 🛑 STRICT FIX: Strip ALL numbers out so phone numbers/dates don't bleed into the college name
       let cleanLine = line.replace(/[0-9]/g, ''); 
       
-      // Step A: Remove UI garbage words
       uiGarbage.forEach(word => {
          const re = new RegExp(`\\b${word}\\b`, 'gi');
          cleanLine = cleanLine.replace(re, " "); 
       });
       
-      // Step B: Split Degree/Dept
       const degreePattern = /\b(B\.?C\.?A|B\.?Sc|B\.?Tech|B\.?E|M\.?C\.?A|M\.?B\.?A|M\.?Sc|B\.?A|B\.?Com)\b/i;
       const match = cleanLine.match(degreePattern);
       
@@ -84,7 +88,6 @@ const extractDataFromText = (text) => {
         cleanLine = cleanLine.replace(/[:\-]/g, " ").trim();
       }
 
-      // Step C: Targeted extraction for College Name
       const targetedCollegeMatch = cleanLine.match(/([a-zA-Z\s.,&'-]{3,60}\b(?:College|University|Institute|Academy)\b(?:\s+of\s+[a-zA-Z\s.,&'-]+)?)/i);
       
       if (targetedCollegeMatch) {
@@ -93,9 +96,8 @@ const extractDataFromText = (text) => {
         college = cleanLine;
       }
       
-      // Final string cleanup
       college = college.replace(/\s+/g, ' ').trim();
-      college = college.replace(/[,.]$/, '').trim(); // Remove trailing commas or dots
+      college = college.replace(/[,.]$/, '').trim(); 
       break; 
     }
   }
@@ -156,11 +158,9 @@ export const processImages = async (req, res) => {
           const { data: { text } } = await worker.recognize(originalPath);
           let extractedData = extractDataFromText(text);
           
-          // 🛑 NAME FIX: Prevent names from being just numbers (e.g. from a phone-number filename)
           if (!extractedData.name || extractedData.name === "Nil" || /^\d+$/.test(extractedData.name.replace(/\s/g, ''))) {
              let potentialName = file.originalname.split('.')[0].replace(/[_-]/g, ' ').trim();
              
-             // If the filename itself is just digits, reject it and keep "Nil"
              if (/^\d+$/.test(potentialName.replace(/\s/g, ''))) {
                  extractedData.name = "Nil";
              } else {
