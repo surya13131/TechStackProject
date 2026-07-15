@@ -1,17 +1,10 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import axios from "axios";
-import FormData from "form-data";
-import { GoogleGenAI, Type } from "@google/genai";
+import { createWorker } from "tesseract.js";
 import Record from "../models/Record.js";
 
 const fsPromises = fs.promises;
-
-// Initialize Gemini
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
 
 // ==========================================
 // MAIN UPLOAD CONTROLLER 
@@ -26,9 +19,6 @@ export const processImages = async (req, res) => {
 
     const results = [];
     const duplicates = [];
-
-    // Use Environment Variable with a local fallback
-    const OCR_API = process.env.OCR_API || "http://localhost:8000/ocr";
 
     for (const file of files) {
       const startTime = Date.now();
@@ -46,84 +36,32 @@ export const processImages = async (req, res) => {
           continue; 
         }
 
-        // 2. Call Python OCR Microservice via FormData
+        // 2. Perform OCR using tesseract.js
         let ocrText = "";
+        const worker = await createWorker('eng');
         try {
-          console.log(`📡 Sending ${file.originalname} to Python OCR API at ${OCR_API}...`);
-          
-          const form = new FormData();
-          form.append("file", fs.createReadStream(originalPath));
-
-          const ocrResponse = await axios.post(OCR_API, form, {
-            headers: form.getHeaders() // Crucial for multipart/form-data
-          });
-          
-          ocrText = ocrResponse.data.text;
-          console.log(`✅ Python OCR extracted ${ocrText.length} characters.`);
-          
-        } catch (ocrError) {
-          console.error("❌ Python OCR Microservice failed:", ocrError.message);
-          ocrText = "OCR Microservice Failed. Please read the image directly."; 
+          console.log(`🤖 Performing OCR on ${file.originalname} using Tesseract.js...`);
+          const { data: { text } } = await worker.recognize(originalPath);
+          ocrText = text;
+          console.log(`✅ Tesseract.js extracted ${ocrText.length} characters.`);
+        } catch (tesseractError) {
+          console.error("❌ Tesseract.js OCR failed:", tesseractError);
+          ocrText = "OCR Failed.";
+        } finally {
+          await worker.terminate();
         }
 
-        // 3. Extract Data using Gemini (Combining Image + OCR Text)
-        let extractedFields = {};
-        const base64Image = fileBuffer.toString("base64");
-
-        const prompt = `
-          You are an exact data parsing tool. Look at the attached recruiter profile screenshot AND the raw OCR text below.
-          
-          RAW OCR TEXT:
-          """
-          ${ocrText}
-          """
-          
-          CRITICAL RULES:
-          1. Use the OCR text to extract the data, but verify spelling against the image.
-          2. DO NOT HALLUCINATE OR GUESS.
-          3. If a field is not visible, you MUST return "Nil".
-          4. Phone numbers must contain only digits.
-          5. Platform must be strictly one of: "Naukri", "LinkedIn", "Foundit", "Shine", "Indeed", or "Nil".
-        `;
-
-        try {
-          if (!process.env.GEMINI_API_KEY) throw new Error("No API Key configured.");
-
-          const response = await ai.models.generateContent({
-            model: "gemini-2-flash",
-            contents: [
-              { inlineData: { mimeType: file.mimetype, data: base64Image } },
-              { text: prompt }
-            ],
-            config: {
-              temperature: 0.0,
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  email: { type: Type.STRING },
-                  phone: { type: Type.STRING },
-                  location: { type: Type.STRING },
-                  college: { type: Type.STRING },
-                  department: { type: Type.STRING },
-                  platform: { type: Type.STRING }
-                },
-                required: ["name", "email", "phone", "location", "college", "department", "platform"]
-              }
-            }
-          });
-
-          extractedFields = JSON.parse(response.text);
-          console.log(`✅ Gemini successfully formatted data for: ${file.originalname}`);
-
-        } catch (err) {
-          console.error(`❌ Gemini formatting failed for ${file.originalname}:`, err);
-          extractedFields = {
-            name: "Nil", email: "Nil", phone: "Nil", location: "Nil", 
-            college: "Nil", department: "Nil", platform: "Nil"
-          };
-        }
+        // Since we are only using Tesseract, we will save the raw text.
+        // The previous logic for extracting specific fields with Gemini is removed.
+        const extractedFields = {
+          name: file.originalname, // Using filename as a placeholder for name
+          email: "Nil",
+          phone: "Nil",
+          location: "Nil",
+          college: ocrText, // Storing the full OCR text in the 'college' field for now
+          department: "Nil",
+          platform: "Nil",
+        };
 
         // 4. Strict Regex Validation
         const phoneRegex = /(?:(?:\+|0{0,2})91[\s-]?)?([6-9]\d{9})/;
