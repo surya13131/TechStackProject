@@ -12,8 +12,9 @@ const fsPromises = fs.promises;
 // 1. PIPELINE UTILS, REGEX & NORMALIZERS
 // ==========================================
 
-// Highly robust Degree Regex matching OCR artifacts and full titles
-const degreeRegex = /(B(?:\.|\s)?TECH|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
+// CRITICAL FIX: Added \b word boundaries so "ME" doesn't match inside "Resume" or "Home"
+// Added support for "B.Tech/B.E" inline matches.
+const degreeRegex = /\b(B(?:\.|\s)?TECH(?:\s*[\/|]\s*B(?:\.|\s)?E)?|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)\b(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
 const phoneRegex = /(?:\+91[- ]?)?([6-9]\d{9})(?!\d)/;
 
 // Precompiled Location Regexes
@@ -58,12 +59,14 @@ const emailToName = (email) => {
   return recovered.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || "Nil";
 };
 
+// CRITICAL FIX: Expanded blacklist to block "Volunteer", "Student", "Intern", etc.
 const invalidNameWords = [
   "Jobs", "Responses", "Reports", "Report", "Profile", "Profiles",
   "Comments", "Candidate", "Candidates", "Schedule", "Forward",
   "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin",
   "Home", "Find", "Employer", "Degree", "Location", 
-  "Fresher", "Available", "Join", "Current" // Added blocklist words
+  "Fresher", "Available", "Join", "Current", "Volunteer", 
+  "Student", "Intern", "Internship", "Trainee", "Applicable", "Summary", "Details"
 ];
 
 const isCandidateName = (line) => {
@@ -75,7 +78,11 @@ const isCandidateName = (line) => {
   }
   
   const words = line.trim().split(/\s+/);
-  if (words.length > 5 || words.some(w => w.length < 2)) return false;
+  if (words.length > 5) return false;
+  
+  // Reject single words that are less than 3 chars (OCR artifacts like "A" or "Na")
+  // But allow things like "Varsha M" where "M" is just an initial
+  if (words.length === 1 && words[0].length < 3) return false;
   
   return words.every(w => /^[A-Za-z.\s]+$/.test(w));
 };
@@ -116,12 +123,10 @@ const extractNaukri = (lines) => {
     }
   }
 
-  // Robust Highest Degree Search
   const highestIdx = lines.findIndex(line => 
     /highest\s*degree/i.test(line) || line.toLowerCase().includes("highest")
   );
 
-  // Email Extraction
   for (const line of lines) {
     if (line.includes("@") && email === "Nil") {
       const eMatch = line.match(/\S+@\S+\.\S+/);
@@ -129,7 +134,6 @@ const extractNaukri = (lines) => {
     }
   }
 
-  // Block Search for Phone
   const searchStartIdx = highestIdx !== -1 ? highestIdx : 0;
   let searchBlock = [];
   for (let i = searchStartIdx; i < lines.length; i++) {
@@ -140,11 +144,9 @@ const extractNaukri = (lines) => {
   const pMatch = phoneText.match(phoneRegex);
   if (pMatch) phone = pMatch[1];
 
-  // College & Degree Extraction
   if (highestIdx !== -1) {
     const highestLine = lines[highestIdx];
     
-    // 1. Try extracting from the same line FIRST (Handles merged OCR blocks)
     const inlineDegreeMatch = highestLine.match(degreeRegex);
     if (inlineDegreeMatch) {
       degree = normalizeDegree(inlineDegreeMatch[1]);
@@ -155,28 +157,25 @@ const extractNaukri = (lines) => {
     if (inlineCollegeMatch) {
        let rawCol = inlineCollegeMatch[1];
        if (inlineDegreeMatch) rawCol = rawCol.replace(inlineDegreeMatch[0], "");
-       rawCol = rawCol.replace(/highest\s*degree[:\s-]*/i, ""); // Strip out the label
+       rawCol = rawCol.replace(/highest\s*degree[:\s-]*/i, ""); 
        
        if (rawCol.trim().length > 5) {
          college = normalizeCollege(rawCol);
        }
     }
 
-    // 2. If college wasn't on the same line, check subsequent lines
     if (college === "Nil") {
       const collegeLines = [];
       
       for (let i = highestIdx + 1; i < lines.length; i++) {
         const lineLower = lines[i].toLowerCase();
         
-        // Strict exit conditions
         if (phoneRegex.test(lines[i]) || lines[i].includes("@") || /(modified|active)/i.test(lineLower)) break;
         
         if (collegeKeywords.some(k => lineLower.includes(k))) {
           collegeLines.push(lines[i]);
         }
         
-        // Extract Degree along the way if it wasn't on the highest line
         if (degree === "Nil") {
           const degreeMatch = lines[i].match(degreeRegex);
           if (degreeMatch) {
@@ -238,6 +237,13 @@ const extractShine = (lines) => {
     if (degreeMatch && degree === "Nil") {
       degree = normalizeDegree(degreeMatch[1]);
       if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
+      
+      // CRITICAL FIX: Ensure degree substring is removed if college is on the same line
+      let potentialCollege = line.replace(degreeMatch[0], "").trim() || (lines[i+1] ? lines[i+1].trim() : "");
+      
+      if (potentialCollege && collegeKeywords.some(k => potentialCollege.toLowerCase().includes(k))) {
+         college = normalizeCollege(potentialCollege);
+      }
     }
     
     if (college === "Nil" && collegeKeywords.some(k => lineLower.includes(k))) {
@@ -420,13 +426,12 @@ export const processImages = async (req, res) => {
               );
             });
           } else {
-            console.log("No word data available");
+            console.log("No word data available in this execution.");
           }
           console.log("========================================================\n");
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           
-          // Safe MongoDB Injection
           console.log("Saving to MongoDB...");
           console.log(finalData);
           try {
@@ -457,3 +462,53 @@ export const processImages = async (req, res) => {
 // ==========================================
 // Fetch, Update, Delete Controllers
 // ==========================================
+export const getRecords = async (req, res) => {
+  try {
+    const records = await Record.find().sort({ createdAt: -1 }).lean();
+    res.status(200).json(records);
+  } catch (err) {
+    console.error("❌ Error fetching records:", err);
+    res.status(500).json({ error: "Server error while fetching records." });
+  }
+};
+
+export const updateRecord = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID format." });
+
+    const secureUpdate = { 
+      name: req.body.name, 
+      email: req.body.email, 
+      phone: req.body.phone, 
+      location: req.body.location, 
+      college: req.body.college, 
+      degree: req.body.degree, 
+      specialization: req.body.specialization,
+      platform: req.body.platform 
+    };
+
+    const updated = await Record.findByIdAndUpdate(id, { $set: secureUpdate }, { new: true, runValidators: true }).lean(); 
+    if (!updated) return res.status(404).json({ error: "Record not found." });
+
+    res.status(200).json(updated);
+  } catch (err) {
+    console.error(`❌ Error updating record ${req.params.id}:`, err);
+    res.status(500).json({ error: "Server error." });
+  }
+};
+
+export const deleteRecord = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID format." });
+
+    const deleted = await Record.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ error: "Record not found." });
+
+    res.status(200).json({ message: "Record deleted successfully.", deletedId: id });
+  } catch (err) {
+    console.error(`❌ Error deleting record ${req.params.id}:`, err);
+    res.status(500).json({ error: "Server error." });
+  }
+};
