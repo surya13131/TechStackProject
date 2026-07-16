@@ -12,11 +12,11 @@ const fsPromises = fs.promises;
 // 1. PIPELINE UTILS, REGEX & NORMALIZERS
 // ==========================================
 
-// Group 1: Degree | Group 2: Specialization
-const degreeRegex = /(B\.?Tech|B\.?E|M\.?Tech|M\.?E|MBA|MCA|BCA|BBA|B\.?Sc|M\.?Sc|B\.?Com|M\.?Com|B\.?A)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML))?/i;
+// Problem 2 Fixed: Expanded Degree Regex to catch OCR variations
+const degreeRegex = /(B(?:\.|\s)?TECH|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
 const phoneRegex = /(?:\+91[- ]?)?([6-9]\d{9})(?!\d)/;
 
-// Precompiled Location Regexes (Performance Improvement)
+// Precompiled Location Regexes
 const priorityCities = ["Chennai", "Bangalore", "Hyderabad", "Pune"];
 const techHubs = ["Mumbai", "Coimbatore", "Noida", "Gurgaon", "Delhi"];
 const cityPatterns = [...priorityCities, ...techHubs].map(city => ({
@@ -24,13 +24,9 @@ const cityPatterns = [...priorityCities, ...techHubs].map(city => ({
   regex: new RegExp(`\\b${city}\\b`, "i")
 }));
 
-// Section Headers for Bounding Extraction
-const sectionHeaders = [
-  "preferred location", "current employer", "skills", 
-  "projects", "resume", "education", "experience", "expected salary"
-];
+// Problem 7 Fixed: Specific keywords for safe college extraction
+const collegeKeywords = ["college", "university", "institute", "academy", "engineering", "polytechnic"];
 
-// Aggressive OCR Cleaner
 const cleanOCR = (text) => {
   const garbage = [
     "save", "print", "no comments", "report profile", 
@@ -52,19 +48,16 @@ const detectPlatform = (text) => {
   return "Generic";
 };
 
-// Normalization Helpers
 const normalizeDegree = (val) => val ? val.replace(/\./g, "").replace(/\s+/g, " ").trim().toUpperCase() : "Nil";
 const normalizeCollege = (val) => val ? val.replace(/\s+/g, " ").trim() : "Nil";
 const normalizeName = (val) => val ? val.replace(/\s+/g, " ").trim() : "Nil";
 
-// Fallback Helper: Email to Name
 const emailToName = (email) => {
   if (!email || email === "Nil") return "Nil";
   let recovered = email.split("@")[0].replace(/[._-]/g, " ").replace(/\d+/g, "").replace(/\s+/g, " ").trim();
   return recovered.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || "Nil";
 };
 
-// Validation & Blacklists
 const invalidNameWords = [
   "Jobs", "Responses", "Reports", "Report", "Profile", "Profiles",
   "Comments", "Candidate", "Candidates", "Schedule", "Forward",
@@ -76,13 +69,12 @@ const isCandidateName = (line) => {
   if (line.length < 3 || line.length > 45) return false;
   if (/\d/.test(line)) return false;
   
-  // Strict Word Boundary Check (Prevents breaking names like "Colin" on "Call")
   for (const word of invalidNameWords) {
     if (new RegExp(`\\b${word}\\b`, 'i').test(line)) return false;
   }
   
   const words = line.trim().split(/\s+/);
-  if (words.length > 5) return false;
+  if (words.length > 5 || words.some(w => w.length < 2)) return false;
   
   return words.every(w => /^[A-Za-z.\s]+$/.test(w));
 };
@@ -123,49 +115,62 @@ const extractNaukri = (lines) => {
     }
   }
 
-  let highestIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].toLowerCase().includes("highest degree")) {
-      highestIdx = i;
-      break;
-    }
-  }
+  // Problem 1 Fixed: Robust Highest Degree Search
+  const highestIdx = lines.findIndex(line => 
+    /highest\s*degree/i.test(line) || line.toLowerCase().includes("highest")
+  );
 
-  const searchStartIndex = highestIdx !== -1 ? highestIdx : 0;
-  for (let i = searchStartIndex; i < lines.length; i++) {
-    const line = lines[i];
-    const pMatch = line.match(phoneRegex);
-    if (pMatch && phone === "Nil") phone = pMatch[1];
-
+  // Email Extraction (Global search is usually safe for emails)
+  for (const line of lines) {
     if (line.includes("@") && email === "Nil") {
       const eMatch = line.match(/\S+@\S+\.\S+/);
       if (eMatch) email = eMatch[0].toLowerCase();
     }
   }
 
+  // Problem 3 Fixed: Block Search for Phone (Prevents picking up URLs)
+  const searchStartIdx = highestIdx !== -1 ? highestIdx : 0;
+  let searchBlock = [];
+  for (let i = searchStartIdx; i < lines.length; i++) {
+    if (lines[i].includes("@")) break;
+    searchBlock.push(lines[i]);
+  }
+  const phoneText = searchBlock.join(" ");
+  const pMatch = phoneText.match(phoneRegex);
+  if (pMatch) phone = pMatch[1];
+
+  // Problem 6 & 7 Fixed: Safer College Extraction using Keywords
   if (highestIdx !== -1) {
     const collegeLines = [];
-    const stopWords = ["call candidate", "whatsapp", "modified", "active", "save", "comments", "print", "profile"];
     
     for (let i = highestIdx + 1; i < lines.length; i++) {
       const lineLower = lines[i].toLowerCase();
       
-      if (phoneRegex.test(lines[i]) || lines[i].includes("@") || lineLower.includes("modified") || lineLower.includes("active")) break;
-      if (stopWords.some(w => lineLower.includes(w))) break;
-      if (sectionHeaders.some(h => lineLower.includes(h))) break;
+      // Strict exit conditions
+      if (phoneRegex.test(lines[i]) || lines[i].includes("@") || /(modified|active)/i.test(lineLower)) break;
       
-      collegeLines.push(lines[i]);
+      // Only push if it actually looks like a college/institute
+      if (collegeKeywords.some(k => lineLower.includes(k))) {
+        collegeLines.push(lines[i]);
+      }
+      
+      // Extract Degree along the way
+      const degreeMatch = lines[i].match(degreeRegex);
+      if (degreeMatch && degree === "Nil") {
+        degree = normalizeDegree(degreeMatch[1]);
+        if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
+      }
     }
     
     let rawCollege = collegeLines.join(" ");
-    const degreeMatch = rawCollege.match(degreeRegex);
-    
-    if (degreeMatch) {
-      degree = normalizeDegree(degreeMatch[1]);
-      if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
-      college = normalizeCollege(rawCollege.replace(degreeMatch[0], ""));
-    } else {
-      college = normalizeCollege(rawCollege);
+    if (rawCollege) {
+      // Remove the degree from the college string if it got caught
+      const matchedDegree = rawCollege.match(degreeRegex);
+      if (matchedDegree) {
+        college = normalizeCollege(rawCollege.replace(matchedDegree[0], ""));
+      } else {
+        college = normalizeCollege(rawCollege);
+      }
     }
   }
 
@@ -185,27 +190,34 @@ const extractShine = (lines) => {
     }
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    const pMatch = line.match(phoneRegex);
-    if (pMatch && phone === "Nil") phone = pMatch[1];
-
+  for (const line of lines) {
     if (line.includes("@") && email === "Nil") {
       const eMatch = line.match(/\S+@\S+\.\S+/);
       if (eMatch) email = eMatch[0].toLowerCase();
     }
+  }
+
+  let searchBlock = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes("@")) break;
+    searchBlock.push(lines[i]);
+  }
+  const phoneText = searchBlock.join(" ");
+  const pMatch = phoneText.match(phoneRegex);
+  if (pMatch) phone = pMatch[1];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineLower = line.toLowerCase();
 
     const degreeMatch = line.match(degreeRegex);
     if (degreeMatch && degree === "Nil") {
       degree = normalizeDegree(degreeMatch[1]);
       if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
-      
-      let potentialCollege = line.replace(degreeMatch[0], "").trim() || (lines[i+1] ? lines[i+1].trim() : "");
-      if (potentialCollege && !invalidNameWords.some(w => potentialCollege.toLowerCase().includes(w.toLowerCase()))) {
-        college = normalizeCollege(potentialCollege);
-      }
-      if (!college || college === "") college = "Nil";
+    }
+    
+    if (college === "Nil" && collegeKeywords.some(k => lineLower.includes(k))) {
+       college = normalizeCollege(line);
     }
     
     if (location === "Nil") {
@@ -227,16 +239,13 @@ const extractGeneric = (lines, text) => {
   let name = normalizeName(getField(/(?:Name|Candidate Name)\s*[:\-]?\s*([A-Za-z .]{3,40})/i));
   let email = (text.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b/i) || ["Nil"])[0].toLowerCase();
   
-  // Fallback: Recover name from email if generic labels fail
   if (name === "Nil" && email !== "Nil") {
     name = emailToName(email);
   }
   
   let phone = "Nil";
-  for (const line of lines) {
-    const p = line.match(phoneRegex);
-    if (p) { phone = p[1]; break; }
-  }
+  const p = text.match(phoneRegex);
+  if (p) phone = p[1];
 
   let degree = "Nil", specialization = "Nil";
   const deptMatch = text.match(degreeRegex);
@@ -245,7 +254,14 @@ const extractGeneric = (lines, text) => {
     if (deptMatch[2]) specialization = normalizeDegree(deptMatch[2]);
   }
 
-  let college = normalizeCollege(getField(/([A-Za-z .,&'-]{5,80}(?:College|University|Institute))/i));
+  let college = "Nil";
+  for (const line of lines) {
+     if (collegeKeywords.some(k => line.toLowerCase().includes(k))) {
+         college = normalizeCollege(line);
+         break;
+     }
+  }
+  
   let location = extractLocation(text);
 
   return { name, email, phone, location, college, degree, specialization };
@@ -262,13 +278,11 @@ const isValidValue = (val) => {
 };
 
 const commonValidation = (data, platform, fileName) => {
-  // Final fallback to filename
   if (!data.name || data.name === "Nil" || !isValidValue(data.name) || /^\d+$/.test(data.name.replace(/\s/g, ''))) {
     let potentialName = fileName.split('.')[0].replace(/[_-]/g, ' ').trim();
     data.name = /^\d+$/.test(potentialName.replace(/\s/g, '')) ? "Nil" : normalizeName(potentialName);
   }
 
-  // Use email fallback if filename logic fails
   if (data.name === "Nil" && data.email !== "Nil") {
     data.name = emailToName(data.email);
   }
@@ -298,7 +312,6 @@ export const processImages = async (req, res) => {
     const results = [];
     const duplicates = [];
     
-    // Note: For extreme scale, move this to a global Tesseract.createScheduler()
     const worker = await createWorker('eng');
 
     await worker.setParameters({
@@ -324,7 +337,6 @@ export const processImages = async (req, res) => {
             continue; 
           }
 
-          // Optimized Pipeline: png() added, sharpen adjusted
           const processedImageBuffer = await sharp(fileBuffer)
             .resize({ width: 1800, withoutEnlargement: true }) 
             .grayscale()
@@ -335,10 +347,6 @@ export const processImages = async (req, res) => {
             .toBuffer();
 
           const { data } = await worker.recognize(processedImageBuffer);
-          
-          if (data.confidence < 60) {
-            console.warn(`⚠️ Low OCR confidence (${data.confidence}) for file: ${file.originalname}`);
-          }
           
           const cleanedText = cleanOCR(data.text);
           const platform = detectPlatform(cleanedText);
@@ -357,6 +365,34 @@ export const processImages = async (req, res) => {
           }
 
           const finalData = commonValidation(extractedData, platform, file.originalname);
+          
+          // ========================================================
+          // Problems 4, 5, 8 Fixed: Ultimate Debug Logging Suite
+          // ========================================================
+          console.log("\n========== OCR RAW TEXT ==========");
+          console.log(data.text);
+          
+          console.log("\n========== LINES ARRAY ==========");
+          lines.forEach((l, i) => console.log(`[${i}] ${l}`));
+          
+          console.log("\n========== PARSED OUTPUT ==========");
+          console.table({
+            platform: finalData.platform,
+            name: finalData.name,
+            phone: finalData.phone,
+            email: finalData.email,
+            location: finalData.location,
+            college: finalData.college,
+            degree: finalData.degree,
+            specialization: finalData.specialization
+          });
+          
+          console.log("\n========== WORDS & BBOX ==========");
+          data.words.forEach(w => 
+            console.log(`${w.text} {x0: ${w.bbox.x0}, y0: ${w.bbox.y0}}`)
+          );
+          console.log("========================================================\n");
+
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           
           const newRecord = await Record.create({ imageHash: hash, ...finalData, loadingTime });
