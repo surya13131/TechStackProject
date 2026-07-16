@@ -413,27 +413,32 @@ export const processImages = async (req, res) => {
           
           console.log("\n========== WORDS & BBOX ==========");
           if (data.words && Array.isArray(data.words)) {
-            data.words.forEach(w => 
-              console.log(`${w.text} {x0: ${w.bbox.x0}, y0: ${w.bbox.y0}}`)
-            );
+            data.words.forEach(w => {
+              console.log(
+                w.text,
+                w.bbox ? w.bbox : ""
+              );
+            });
           } else {
-            console.log("No word coordinate data available in this version of Tesseract.");
+            console.log("No word data available");
           }
           console.log("========================================================\n");
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           
           // Safe MongoDB Injection
+          console.log("Saving to MongoDB...");
+          console.log(finalData);
           try {
             const newRecord = await Record.create({ imageHash: hash, ...finalData, loadingTime });
             console.log(`✅ Saved Successfully: ${file.originalname}`);
             results.push(newRecord);
           } catch (dbErr) {
-            console.error(`❌ Mongo Save Error for ${file.originalname}:`, dbErr);
+            console.error(`❌ MongoDB Save Error for ${file.originalname}:`, dbErr);
           }
           
         } catch (err) {
-          console.error(`Error processing ${file.originalname}:`, err);
+          console.error(`Error processing file ${file.originalname}:`, err);
         } finally {
           await fsPromises.unlink(originalPath).catch(() => {});
         }
@@ -442,63 +447,13 @@ export const processImages = async (req, res) => {
       await worker.terminate();
     }
 
-    res.status(200).json({ processed: results, duplicates });
+    res.status(201).json({ processed: results, duplicates });
   } catch (err) {
-    console.error("Upload Error:", err);
-    res.status(500).json({ error: "Server Error." });
+    console.error("❌ Top-level processImages error:", err);
+    res.status(500).json({ error: "An unexpected server error occurred." });
   }
 };
 
 // ==========================================
 // Fetch, Update, Delete Controllers
 // ==========================================
-export const getRecords = async (req, res) => {
-  try {
-    const records = await Record.find().sort({ createdAt: -1 }).lean();
-    res.status(200).json(records);
-  } catch (err) {
-    console.error("❌ Error fetching records:", err);
-    res.status(500).json({ error: "Server error while fetching records." });
-  }
-};
-
-export const updateRecord = async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID format." });
-
-    const secureUpdate = { 
-      name: req.body.name, 
-      email: req.body.email, 
-      phone: req.body.phone, 
-      location: req.body.location, 
-      college: req.body.college, 
-      degree: req.body.degree, 
-      specialization: req.body.specialization,
-      platform: req.body.platform 
-    };
-
-    const updated = await Record.findByIdAndUpdate(id, { $set: secureUpdate }, { new: true, runValidators: true }).lean(); 
-    if (!updated) return res.status(404).json({ error: "Record not found." });
-
-    res.status(200).json(updated);
-  } catch (err) {
-    console.error(`❌ Error updating record ${req.params.id}:`, err);
-    res.status(500).json({ error: "Server error." });
-  }
-};
-
-export const deleteRecord = async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID format." });
-
-    const deleted = await Record.findByIdAndDelete(id);
-    if (!deleted) return res.status(404).json({ error: "Record not found." });
-
-    res.status(200).json({ message: "Record deleted successfully.", deletedId: id });
-  } catch (err) {
-    console.error(`❌ Error deleting record ${req.params.id}:`, err);
-    res.status(500).json({ error: "Server error." });
-  }
-};
