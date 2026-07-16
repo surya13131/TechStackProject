@@ -12,8 +12,8 @@ const fsPromises = fs.promises;
 // 1. PIPELINE UTILS, REGEX & NORMALIZERS
 // ==========================================
 
-// Problem 2 Fixed: Expanded Degree Regex to catch OCR variations
-const degreeRegex = /(B\.?\s?Sc|B\.?\s?Tech|B\.?\s?E|BCA|MCA|MBA|Bachelor\s+of\s+Engineering|M\.?\s?Sc|M\.?\s?Tech|M\.?\s?E|BCOM|BA)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
+// Highly robust Degree Regex matching OCR artifacts and full titles
+const degreeRegex = /(B(?:\.|\s)?TECH|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
 const phoneRegex = /(?:\+91[- ]?)?([6-9]\d{9})(?!\d)/;
 
 // Precompiled Location Regexes
@@ -24,7 +24,7 @@ const cityPatterns = [...priorityCities, ...techHubs].map(city => ({
   regex: new RegExp(`\\b${city}\\b`, "i")
 }));
 
-// Problem 7 Fixed: Specific keywords for safe college extraction
+// Specific keywords for safe college extraction
 const collegeKeywords = ["college", "university", "institute", "academy", "engineering", "polytechnic"];
 
 const cleanOCR = (text) => {
@@ -61,9 +61,9 @@ const emailToName = (email) => {
 const invalidNameWords = [
   "Jobs", "Responses", "Reports", "Report", "Profile", "Profiles",
   "Comments", "Candidate", "Candidates", "Schedule", "Forward",
-  "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin", "Fresher",
-  "Available", "Join", "Current",
-  "Home", "Find", "Employer", "Degree", "Location"
+  "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin",
+  "Home", "Find", "Employer", "Degree", "Location", 
+  "Fresher", "Available", "Join", "Current" // Added blocklist words
 ];
 
 const isCandidateName = (line) => {
@@ -97,34 +97,31 @@ const extractNaukri = (lines) => {
   let location = "Nil", college = "Nil", degree = "Nil", specialization = "Nil";
 
   const headerLines = lines.slice(0, 10);
-  // Find the first valid candidate name that isn't just "Fresher"
-  const potentialName = headerLines.find(line => isCandidateName(line) && !/fresher/i.test(line));
-  if (potentialName) {
-    name = normalizeName(potentialName);
+  for (const line of headerLines) {
+    if (isCandidateName(line)) {
+      name = normalizeName(line);
+      break;
+    }
   }
 
   for (let i = 0; i < lines.length; i++) {
     const lower = lines[i].toLowerCase();
-    if (location === "Nil") {
-      if (lower.includes("fresher") || lower.includes("0 yr") || lower.includes("0 years")) {
-        const locationContext = lines.slice(i, i + 3).join(" ");
-        const foundLocation = extractLocation(locationContext);
-        if (foundLocation !== "Nil") {
-          location = foundLocation;
-        }
-      } else {
-        const foundLocation = extractLocation(lower);
-        if (foundLocation !== "Nil") location = foundLocation;
+    if (lower.includes("fresher") || lower.includes("0 yr") || lower.includes("0 years")) {
+      const locationContext = lines.slice(i, i + 3).join(" ");
+      const foundLocation = extractLocation(locationContext);
+      if (foundLocation !== "Nil") {
+        location = foundLocation;
+        break;
       }
     }
   }
 
-  // Problem 1 Fixed: Robust Highest Degree Search
+  // Robust Highest Degree Search
   const highestIdx = lines.findIndex(line => 
     /highest\s*degree/i.test(line) || line.toLowerCase().includes("highest")
   );
 
-  // Email Extraction (Global search is usually safe for emails)
+  // Email Extraction
   for (const line of lines) {
     if (line.includes("@") && email === "Nil") {
       const eMatch = line.match(/\S+@\S+\.\S+/);
@@ -132,7 +129,7 @@ const extractNaukri = (lines) => {
     }
   }
 
-  // Problem 3 Fixed: Block Search for Phone (Prevents picking up URLs)
+  // Block Search for Phone
   const searchStartIdx = highestIdx !== -1 ? highestIdx : 0;
   let searchBlock = [];
   for (let i = searchStartIdx; i < lines.length; i++) {
@@ -143,37 +140,60 @@ const extractNaukri = (lines) => {
   const pMatch = phoneText.match(phoneRegex);
   if (pMatch) phone = pMatch[1];
 
-  // Problem 6 & 7 Fixed: Safer College Extraction using Keywords
+  // College & Degree Extraction
   if (highestIdx !== -1) {
-    const collegeLines = [];
+    const highestLine = lines[highestIdx];
     
-    for (let i = highestIdx + 1; i < lines.length; i++) {
-      const lineLower = lines[i].toLowerCase();
-      
-      // Strict exit conditions
-      if (phoneRegex.test(lines[i]) || lines[i].includes("@") || /(modified|active)/i.test(lineLower)) break;
-      
-      // Only push if it actually looks like a college/institute
-      if (collegeKeywords.some(k => lineLower.includes(k))) {
-        collegeLines.push(lines[i]);
-      }
-      
-      // Extract Degree along the way
-      const degreeMatch = lines[i].match(degreeRegex);
-      if (degreeMatch && degree === "Nil") {
-        degree = normalizeDegree(degreeMatch[1]);
-        if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
-      }
+    // 1. Try extracting from the same line FIRST (Handles merged OCR blocks)
+    const inlineDegreeMatch = highestLine.match(degreeRegex);
+    if (inlineDegreeMatch) {
+      degree = normalizeDegree(inlineDegreeMatch[1]);
+      if (inlineDegreeMatch[2]) specialization = normalizeDegree(inlineDegreeMatch[2]);
     }
     
-    let rawCollege = collegeLines.join(" ");
-    if (rawCollege) {
-      // Remove the degree from the college string if it got caught
-      const matchedDegree = rawCollege.match(degreeRegex);
-      if (matchedDegree) {
-        college = normalizeCollege(rawCollege.replace(matchedDegree[0], ""));
-      } else {
-        college = normalizeCollege(rawCollege);
+    const inlineCollegeMatch = highestLine.match(/(.*college.*|.*university.*|.*institute.*|.*academy.*|.*engineering.*|.*polytechnic.*)/i);
+    if (inlineCollegeMatch) {
+       let rawCol = inlineCollegeMatch[1];
+       if (inlineDegreeMatch) rawCol = rawCol.replace(inlineDegreeMatch[0], "");
+       rawCol = rawCol.replace(/highest\s*degree[:\s-]*/i, ""); // Strip out the label
+       
+       if (rawCol.trim().length > 5) {
+         college = normalizeCollege(rawCol);
+       }
+    }
+
+    // 2. If college wasn't on the same line, check subsequent lines
+    if (college === "Nil") {
+      const collegeLines = [];
+      
+      for (let i = highestIdx + 1; i < lines.length; i++) {
+        const lineLower = lines[i].toLowerCase();
+        
+        // Strict exit conditions
+        if (phoneRegex.test(lines[i]) || lines[i].includes("@") || /(modified|active)/i.test(lineLower)) break;
+        
+        if (collegeKeywords.some(k => lineLower.includes(k))) {
+          collegeLines.push(lines[i]);
+        }
+        
+        // Extract Degree along the way if it wasn't on the highest line
+        if (degree === "Nil") {
+          const degreeMatch = lines[i].match(degreeRegex);
+          if (degreeMatch) {
+            degree = normalizeDegree(degreeMatch[1]);
+            if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
+          }
+        }
+      }
+      
+      let rawCollege = collegeLines.join(" ");
+      if (rawCollege) {
+        const matchedDegree = rawCollege.match(degreeRegex);
+        if (matchedDegree) {
+          college = normalizeCollege(rawCollege.replace(matchedDegree[0], ""));
+        } else {
+          college = normalizeCollege(rawCollege);
+        }
       }
     }
   }
@@ -371,7 +391,7 @@ export const processImages = async (req, res) => {
           const finalData = commonValidation(extractedData, platform, file.originalname);
           
           // ========================================================
-          // Problems 4, 5, 8 Fixed: Ultimate Debug Logging Suite
+          // Safe Debug Logging Suite
           // ========================================================
           console.log("\n========== OCR RAW TEXT ==========");
           console.log(data.text);
@@ -392,15 +412,25 @@ export const processImages = async (req, res) => {
           });
           
           console.log("\n========== WORDS & BBOX ==========");
-          data.words.forEach(w => 
-            console.log(`${w.text} {x0: ${w.bbox.x0}, y0: ${w.bbox.y0}}`)
-          );
+          if (data.words && Array.isArray(data.words)) {
+            data.words.forEach(w => 
+              console.log(`${w.text} {x0: ${w.bbox.x0}, y0: ${w.bbox.y0}}`)
+            );
+          } else {
+            console.log("No word coordinate data available in this version of Tesseract.");
+          }
           console.log("========================================================\n");
 
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           
-          const newRecord = await Record.create({ imageHash: hash, ...finalData, loadingTime });
-          results.push(newRecord);
+          // Safe MongoDB Injection
+          try {
+            const newRecord = await Record.create({ imageHash: hash, ...finalData, loadingTime });
+            console.log(`✅ Saved Successfully: ${file.originalname}`);
+            results.push(newRecord);
+          } catch (dbErr) {
+            console.error(`❌ Mongo Save Error for ${file.originalname}:`, dbErr);
+          }
           
         } catch (err) {
           console.error(`Error processing ${file.originalname}:`, err);
