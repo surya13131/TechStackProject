@@ -34,7 +34,8 @@ export const updateRecord = async (req, res) => {
       phone, 
       location, 
       college, 
-      department, 
+      degree, 
+      specialization,
       platform 
     } = req.body;
 
@@ -44,7 +45,8 @@ export const updateRecord = async (req, res) => {
       phone, 
       location, 
       college, 
-      department, 
+      degree, 
+      specialization,
       platform 
     };
 

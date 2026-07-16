@@ -13,7 +13,7 @@ const fsPromises = fs.promises;
 // ==========================================
 
 // Problem 2 Fixed: Expanded Degree Regex to catch OCR variations
-const degreeRegex = /(B(?:\.|\s)?TECH|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
+const degreeRegex = /(B\.?\s?Sc|B\.?\s?Tech|B\.?\s?E|BCA|MCA|MBA|Bachelor\s+of\s+Engineering|M\.?\s?Sc|M\.?\s?Tech|M\.?\s?E|BCOM|BA)(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
 const phoneRegex = /(?:\+91[- ]?)?([6-9]\d{9})(?!\d)/;
 
 // Precompiled Location Regexes
@@ -61,7 +61,8 @@ const emailToName = (email) => {
 const invalidNameWords = [
   "Jobs", "Responses", "Reports", "Report", "Profile", "Profiles",
   "Comments", "Candidate", "Candidates", "Schedule", "Forward",
-  "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin",
+  "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin", "Fresher",
+  "Available", "Join", "Current",
   "Home", "Find", "Employer", "Degree", "Location"
 ];
 
@@ -96,21 +97,24 @@ const extractNaukri = (lines) => {
   let location = "Nil", college = "Nil", degree = "Nil", specialization = "Nil";
 
   const headerLines = lines.slice(0, 10);
-  for (const line of headerLines) {
-    if (isCandidateName(line)) {
-      name = normalizeName(line);
-      break;
-    }
+  // Find the first valid candidate name that isn't just "Fresher"
+  const potentialName = headerLines.find(line => isCandidateName(line) && !/fresher/i.test(line));
+  if (potentialName) {
+    name = normalizeName(potentialName);
   }
 
   for (let i = 0; i < lines.length; i++) {
     const lower = lines[i].toLowerCase();
-    if (lower.includes("fresher") || lower.includes("0 yr") || lower.includes("0 years")) {
-      const locationContext = lines.slice(i, i + 3).join(" ");
-      const foundLocation = extractLocation(locationContext);
-      if (foundLocation !== "Nil") {
-        location = foundLocation;
-        break;
+    if (location === "Nil") {
+      if (lower.includes("fresher") || lower.includes("0 yr") || lower.includes("0 years")) {
+        const locationContext = lines.slice(i, i + 3).join(" ");
+        const foundLocation = extractLocation(locationContext);
+        if (foundLocation !== "Nil") {
+          location = foundLocation;
+        }
+      } else {
+        const foundLocation = extractLocation(lower);
+        if (foundLocation !== "Nil") location = foundLocation;
       }
     }
   }
