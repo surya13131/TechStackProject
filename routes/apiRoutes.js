@@ -9,7 +9,7 @@ import {
 
 const router = express.Router();
 
-// Multer Config with File Validation
+
 const upload = multer({
   dest: "uploads/",
   fileFilter: (req, file, cb) => {
@@ -22,7 +22,7 @@ const upload = multer({
   },
 });
 
-// Handle Multer Errors gracefully
+
 const uploadMiddleware = (req, res, next) => {
   const uploadHandler = upload.array("images", 10);
   uploadHandler(req, res, function (err) {

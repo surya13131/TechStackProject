@@ -8,16 +8,11 @@ import Record from "../models/Record.js";
 
 const fsPromises = fs.promises;
 
-// ==========================================
-// 1. PIPELINE UTILS, REGEX & NORMALIZERS
-// ==========================================
 
-// CRITICAL FIX: Added \b word boundaries so "ME" doesn't match inside "Resume" or "Home"
-// Added support for "B.Tech/B.E" inline matches.
-const degreeRegex = /\b(B(?:\.|\s)?TECH(?:\s*[\/|]\s*B(?:\.|\s)?E)?|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering)\b(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
+const degreeRegex = /\b(B(?:\.|\s)?TECH(?:\s*[\/|]\s*B(?:\.|\s)?E)?|B(?:\.|\s)?E|B(?:\.|\s)?SC|BCA|MBA|MCA|M(?:\.|\s)?TECH|M(?:\.|\s)?E|BCOM|BA|Bachelor\s+of\s+Engineering|Diploma)\b(?:\s*[-/]?\s*(CSE|ECE|EEE|IT|MECH|CIVIL|AIDS|AI&DS|AI&ML|CSBS))?/i;
 const phoneRegex = /(?:\+91[- ]?)?([6-9]\d{9})(?!\d)/;
 
-// Precompiled Location Regexes
+
 const priorityCities = ["Chennai", "Bangalore", "Hyderabad", "Pune"];
 const techHubs = ["Mumbai", "Coimbatore", "Noida", "Gurgaon", "Delhi"];
 const cityPatterns = [...priorityCities, ...techHubs].map(city => ({
@@ -26,7 +21,7 @@ const cityPatterns = [...priorityCities, ...techHubs].map(city => ({
 }));
 
 // Specific keywords for safe college extraction
-const collegeKeywords = ["college", "university", "institute", "academy", "engineering", "polytechnic"];
+const collegeKeywords = ["college", "university", "institute", "academy", "engineering", "polytechnic", "school"];
 
 const cleanOCR = (text) => {
   const garbage = [
@@ -59,14 +54,15 @@ const emailToName = (email) => {
   return recovered.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || "Nil";
 };
 
-// CRITICAL FIX: Expanded blacklist to block "Volunteer", "Student", "Intern", etc.
+// CRITICAL FIX: Added Volunteer, Student, Intern, Internship, Trainee, Freelancer to prevent false names.
 const invalidNameWords = [
   "Jobs", "Responses", "Reports", "Report", "Profile", "Profiles",
   "Comments", "Candidate", "Candidates", "Schedule", "Forward",
   "Whatsapp", "Call", "Download", "Resume", "Workspace", "Admin",
   "Home", "Find", "Employer", "Degree", "Location", 
   "Fresher", "Available", "Join", "Current", "Volunteer", 
-  "Student", "Intern", "Internship", "Trainee", "Applicable", "Summary", "Details"
+  "Student", "Intern", "Internship", "Trainee", "Freelancer", 
+  "Applicable", "Summary", "Details", "Month", "Year", "Notice", "Yr"
 ];
 
 const isCandidateName = (line) => {
@@ -80,8 +76,7 @@ const isCandidateName = (line) => {
   const words = line.trim().split(/\s+/);
   if (words.length > 5) return false;
   
-  // Reject single words that are less than 3 chars (OCR artifacts like "A" or "Na")
-  // But allow things like "Varsha M" where "M" is just an initial
+
   if (words.length === 1 && words[0].length < 3) return false;
   
   return words.every(w => /^[A-Za-z.\s]+$/.test(w));
@@ -94,11 +89,6 @@ const extractLocation = (textBlock) => {
   return "Nil";
 };
 
-// ==========================================
-// 2. PARSERS (Strategy Pattern)
-// ==========================================
-
-// --- NAUKRI PARSER ---
 const extractNaukri = (lines) => {
   let name = "Nil", email = "Nil", phone = "Nil";
   let location = "Nil", college = "Nil", degree = "Nil", specialization = "Nil";
@@ -238,7 +228,6 @@ const extractShine = (lines) => {
       degree = normalizeDegree(degreeMatch[1]);
       if (degreeMatch[2]) specialization = normalizeDegree(degreeMatch[2]);
       
-      // CRITICAL FIX: Ensure degree substring is removed if college is on the same line
       let potentialCollege = line.replace(degreeMatch[0], "").trim() || (lines[i+1] ? lines[i+1].trim() : "");
       
       if (potentialCollege && collegeKeywords.some(k => potentialCollege.toLowerCase().includes(k))) {
@@ -259,7 +248,7 @@ const extractShine = (lines) => {
   return { name, email, phone, location, college, degree, specialization };
 };
 
-// --- GENERIC PARSER (Fallback) ---
+
 const extractGeneric = (lines, text) => {
   const getField = (labelRegex) => {
     const match = text.match(labelRegex);
@@ -297,13 +286,11 @@ const extractGeneric = (lines, text) => {
   return { name, email, phone, location, college, degree, specialization };
 };
 
-// ==========================================
-// 3. COMMON VALIDATION
-// ==========================================
+
 const isValidValue = (val) => {
   if (!val || val === "Nil") return true; 
   const lower = val.toLowerCase();
-  const badValues = ["download resume", "call candidate", "save", "print", "comments", "profile", "workspace", "home", "education", "experience"];
+  const badValues = ["download resume", "call candidate", "save", "print", "comments", "profile", "workspace", "home", "education", "experience", "intern", "student", "volunteer", "internship", "trainee"];
   return !badValues.some(bad => lower.includes(bad));
 };
 
@@ -331,9 +318,7 @@ const commonValidation = (data, platform, fileName) => {
   return { ...data, platform };
 };
 
-// ==========================================
-// 🚀 MAIN UPLOAD CONTROLLER 
-// ==========================================
+
 export const processImages = async (req, res) => {
   try {
     const files = req.files;
@@ -396,9 +381,7 @@ export const processImages = async (req, res) => {
 
           const finalData = commonValidation(extractedData, platform, file.originalname);
           
-          // ========================================================
-          // Safe Debug Logging Suite
-          // ========================================================
+       
           console.log("\n========== OCR RAW TEXT ==========");
           console.log(data.text);
           
@@ -433,7 +416,6 @@ export const processImages = async (req, res) => {
           const loadingTime = ((Date.now() - startTime) / 1000).toFixed(2) + " sec";
           
           console.log("Saving to MongoDB...");
-          console.log(finalData);
           try {
             const newRecord = await Record.create({ imageHash: hash, ...finalData, loadingTime });
             console.log(`✅ Saved Successfully: ${file.originalname}`);
@@ -459,9 +441,7 @@ export const processImages = async (req, res) => {
   }
 };
 
-// ==========================================
-// Fetch, Update, Delete Controllers
-// ==========================================
+
 export const getRecords = async (req, res) => {
   try {
     const records = await Record.find().sort({ createdAt: -1 }).lean();

@@ -1,12 +1,9 @@
 import mongoose from "mongoose";
 import Record from "../models/Record.js";
 
-// ==========================================
-// Fetch all records for the dashboard
-// ==========================================
 export const getRecords = async (req, res) => {
   try {
-    // PERFORMANCE UPGRADE: .lean() returns plain JSON
+
     const records = await Record.find().sort({ createdAt: -1 }).lean();
     res.status(200).json(records);
   } catch (err) {
@@ -15,19 +12,16 @@ export const getRecords = async (req, res) => {
   }
 };
 
-// ==========================================
-// Update a specific record (Triggered by Edit)
-// ==========================================
 export const updateRecord = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Validate the MongoDB ID format
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid record ID format." });
     }
 
-    // 2. Destructure ONLY the fields allowed for update
+
     const { 
       name, 
       email, 
@@ -68,9 +62,7 @@ export const updateRecord = async (req, res) => {
   }
 };
 
-// ==========================================
-// Delete a specific record (Triggered by Delete button)
-// ==========================================
+
 export const deleteRecord = async (req, res) => {
   try {
     const { id } = req.params;
